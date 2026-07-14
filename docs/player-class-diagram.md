@@ -1320,21 +1320,21 @@ Navigator sở hữu route. Playback state chỉ mô tả audio.
 
 Trước khi chấp nhận implementation:
 
-- [ ] Chỉ <code>AppAudioHandler</code> tạo <code>AudioPlayer</code>.
-- [ ] <code>PlayerCubit</code> chỉ phụ thuộc <code>PlaybackGateway</code>.
-- [ ] Domain không import Flutter hoặc audio packages.
-- [ ] UI không import just_audio/audio_service.
-- [ ] OS callbacks và UI commands dùng chung handler operations.
-- [ ] Queue chỉ thay qua một entry point.
-- [ ] Current item, UI metadata và OS metadata cùng một PlayerItem.
-- [ ] Position không đến từ timer mô phỏng.
-- [ ] PlayerState không chứa expanded/minimized route state.
-- [ ] Slider preview là state cục bộ, seek thật chỉ commit khi drag kết thúc.
-- [ ] Handler hủy tất cả engine subscriptions.
-- [ ] Cubit hủy snapshot subscription.
-- [ ] Stop clear media session.
-- [ ] Route dispose không stop/dispose handler.
-- [ ] FakePlaybackGateway dùng được trong unit/widget tests.
+- [x] Chỉ <code>AppAudioHandler</code> tạo <code>AudioPlayer</code>.
+- [x] <code>PlayerCubit</code> chỉ phụ thuộc <code>PlaybackGateway</code>.
+- [x] Domain không import Flutter hoặc audio packages.
+- [x] UI không import just_audio/audio_service.
+- [x] OS callbacks và UI commands dùng chung handler operations.
+- [x] Queue chỉ thay qua một entry point.
+- [x] Current item, UI metadata và OS metadata cùng một PlayerItem.
+- [x] Position không đến từ timer mô phỏng.
+- [x] PlayerState không chứa expanded/minimized route state.
+- [x] Slider preview là state cục bộ, seek thật chỉ commit khi drag kết thúc.
+- [x] Handler hủy tất cả engine subscriptions.
+- [x] Cubit hủy snapshot subscription.
+- [x] Stop clear media session.
+- [x] Route dispose không stop/dispose handler.
+- [x] FakePlaybackGateway dùng được trong unit/widget tests.
 
 ## 19. Kết luận
 
