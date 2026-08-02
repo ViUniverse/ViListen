@@ -80,6 +80,58 @@ final class PlaybackSnapshot {
   final bool shuffleEnabled;
   final PlayerFailure? failure;
 
+  /// Playback position normalized to the inclusive range from 0 to 1.
+  ///
+  /// A zero or negative duration represents an unknown duration.
+  double get progress {
+    final durationMicros = duration.inMicroseconds;
+    if (durationMicros <= 0) {
+      return 0.0;
+    }
+
+    final ratio = position.inMicroseconds / durationMicros;
+    if (!ratio.isFinite || ratio <= 0) {
+      return 0.0;
+    }
+    if (ratio >= 1) {
+      return 1.0;
+    }
+    return ratio;
+  }
+
+  /// Time left in the current item, clamped to a non-negative duration.
+  ///
+  /// A zero or negative duration represents an unknown duration.
+  Duration get remaining {
+    if (duration <= Duration.zero) {
+      return Duration.zero;
+    }
+
+    final boundedPosition = position <= Duration.zero
+        ? Duration.zero
+        : position >= duration
+        ? duration
+        : position;
+    return duration - boundedPosition;
+  }
+
+  bool get isBuffering => processingState == PlaybackProcessingState.buffering;
+
+  bool get isAudible =>
+      playing && processingState == PlaybackProcessingState.ready;
+
+  bool get hasNext {
+    final index = currentIndex;
+    return index != null && index >= 0 && index < queue.length - 1;
+  }
+
+  bool get hasPrevious {
+    final index = currentIndex;
+    return index != null && index > 0 && index < queue.length;
+  }
+
+  bool get isCompleted => processingState == PlaybackProcessingState.completed;
+
   static const Object _unset = Object();
 
   PlaybackSnapshot copyWith({
