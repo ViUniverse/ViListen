@@ -449,15 +449,24 @@ dev_dependencies:
 - Files:
   - `assets/test_audio/player_fixture_2s.wav`
   - `pubspec.yaml`
+  - `pubspec.lock` nếu bổ sung test dependency trực tiếp
+  - `test/player_fixture_asset_test.dart`
+  - `integration_test/player_local_smoke_test.dart`
 - Thực hiện:
   - Dùng WAV PCM 2 giây được tạo trong project, không có vấn đề bản quyền.
-  - Ghi sample rate/channels/duration/checksum trong test comment.
+  - Ghi provenance synthetic tone, generator formula,
+    sample rate/channels/duration/checksum trong test comment.
   - Đăng ký đúng asset path trong `pubspec.yaml`.
+  - Unit test đọc asset bundle, kiểm tra RIFF metadata và checksum.
+  - macOS integration test đọc asset bundle và checksum; test này không tạo
+    `AudioPlayer`, không gọi production adapter và không phát audio.
   - Không để smoke test CI phụ thuộc URL Internet.
   - Tách HTTPS/CDN test sang manual external QA.
 - Hoàn thành khi:
-  - Test đọc asset/checksum pass.
-  - Production adapter load được fixture trong local smoke test.
+  - Unit test đọc asset/metadata/checksum pass.
+  - macOS integration asset/checksum test pass.
+  - Điều kiện production adapter load/play fixture thuộc PLR-141, không phải
+    acceptance gate của PLR-013.
 
 ## 6. Phase 2 — Domain thuần Dart
 
@@ -2070,6 +2079,8 @@ flutter build ios --debug --no-codesign
 ### PLR-141 — Local audio smoke test `[CODE]` `[INTEGRATION]`
 
 - Phụ thuộc: PLR-013, PLR-138 đến PLR-140, Gate Phase 10.
+- PLR-013 chỉ cung cấp và xác minh fixture trong asset bundle. PLR-141 là
+  acceptance gate cho production adapter load/play fixture trên target thật.
 - Files:
   - `integration_test/player_local_smoke_test.dart`
 - Test:
