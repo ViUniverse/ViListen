@@ -404,7 +404,7 @@ class _TranscriptSheet extends StatelessWidget {
           duration: const Duration(milliseconds: 260),
           transitionBuilder: (child, animation) => SizeTransition(
             sizeFactor: animation,
-            axisAlignment: -1,
+            alignment: Alignment.topLeft,
             child: FadeTransition(opacity: animation, child: child),
           ),
           child: showBottomPlayer
