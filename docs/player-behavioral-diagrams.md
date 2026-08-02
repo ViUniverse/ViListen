@@ -1,15 +1,17 @@
 # Player Architecture — Behavioral Diagrams
 
-> Loại tài liệu: Mô tả hành vi và cấu trúc động  
-> Trạng thái: Target design, chưa phải hiện trạng đã implement  
-> Phạm vi: Android, iOS, Web và macOS  
-> Stack: <code>just_audio + audio_service + audio_session + flutter_bloc</code>  
-> Cập nhật: 2026-07-11
+> Loại tài liệu: Mô tả hành vi và cấu trúc động<br>
+> Trạng thái: Target design, chưa phải hiện trạng đã implement<br>
+> Phạm vi: Android, iOS, Web và macOS<br>
+> Stack: <code>just_audio + audio_service + audio_session + flutter_bloc</code><br>
+> Cập nhật: 2026-08-02<br>
+> Contract normative: [Player Architecture Decisions](./player-architecture-decisions.md)
 
 Tài liệu liên quan:
 
 - [Kế hoạch triển khai Player](./player-implementation-plan.md)
 - [Player Class Diagram](./player-class-diagram.md)
+- [Player Architecture Decisions](./player-architecture-decisions.md)
 
 ## 1. Mục đích
 
@@ -35,14 +37,16 @@ Ba loại biểu đồ được sử dụng:
 
 ```text
 Command:
-UI hoặc OS
-→ AppAudioHandler
+UI → PlayerCubit → PlaybackGateway/UI adapter
+OS → BaseAudioHandler callback
+→ cùng internal AppAudioHandler operation
 → AudioPlayer
 
 State:
 AudioPlayer streams
 → AppAudioHandler
-→ PlayerCubit + audio_service
+→ PlaybackGateway snapshot + audio_service
+→ PlayerCubit + system media session
 → UI + System Media Controls
 ```
 
@@ -55,6 +59,8 @@ Các invariant:
 5. Route navigation không điều khiển audio lifecycle.
 6. Position không được mô phỏng bằng timer trong Cubit.
 7. Queue và current item chỉ được thay đổi bởi <code>AppAudioHandler</code>.
+8. Mọi policy/ordering trong diagram này phải khớp decision record `Accepted`.
+9. Pending load chưa commit không được publish như active metadata.
 
 ## 3. Các participant trong cấu trúc động
 
@@ -65,11 +71,19 @@ Các invariant:
 | Player widgets | MiniPlayer, ExpandedPlayerScreen, PlayerControlDock |
 | PlayerCubit | Nhận UI intent, delegate command, phát UI state |
 | PlaybackGateway | Contract mà Cubit dùng để giao tiếp với playback |
+| UiPlaybackGatewayAdapter | Gắn source `ui` và forward Gateway command vào internal handler operation |
 | AppAudioHandler | Trung tâm xử lý command, mapping state và OS integration |
-| AudioPlayer | just_audio engine, nguồn sự thật playback |
+| PlaybackEngine | Internal port để handler điều khiển/quan sát engine |
+| JustAudioPlaybackEngine | Production adapter duy nhất của PlaybackEngine |
+| AudioPlayer | just_audio engine duy nhất, do JustAudioPlaybackEngine sở hữu |
 | AudioService | Bridge giữa AppAudioHandler và hệ điều hành |
 | AudioSession | Audio focus/interruption configuration |
 | Navigator | Sở hữu expanded player route |
+
+Để diagram dễ đọc, các mũi tên `Handler → Cubit` ở phần sau là ký hiệu rút gọn
+cho snapshot path `Handler → UiPlaybackGatewayAdapter → PlayerCubit`; command UI
+không bao giờ bypass Gateway adapter. Tương tự, `Handler → AudioPlayer` là ký
+hiệu rút gọn cho `Handler → PlaybackEngine → JustAudioPlaybackEngine → AudioPlayer`.
 
 ## 4. Event Vocabulary
 
@@ -128,8 +142,10 @@ participant Main as main()
 participant Binding as Flutter Binding
 participant AS as AudioService
 participant Handler as AppAudioHandler
+participant EngineAdapter as JustAudioPlaybackEngine
 participant Engine as AudioPlayer
 participant Session as AudioSession
+participant Gateway as UiPlaybackGatewayAdapter
 participant Cubit as PlayerCubit
 participant Provider as BlocProvider
 participant App as MyApp
@@ -137,8 +153,9 @@ participant App as MyApp
 Main->>Binding: ensureInitialized()
 Main->>AS: init(builder, config)
 AS->>Handler: create()
-Handler->>Engine: new AudioPlayer()
-Handler->>Engine: subscribe engine streams
+Handler->>EngineAdapter: create production engine
+EngineAdapter->>Engine: new AudioPlayer() đúng một lần
+Handler->>EngineAdapter: subscribe engine streams qua PlaybackEngine port
 Handler-->>AS: handler ready
 AS-->>Main: AppAudioHandler
 
@@ -147,9 +164,12 @@ Session-->>Main: shared AudioSession
 Main->>Session: configure(speech)
 Session-->>Main: configured
 
-Main->>Cubit: new PlayerCubit(handler as PlaybackGateway)
-Cubit->>Handler: subscribe snapshots
-Handler-->>Cubit: initial idle snapshot
+Main->>Gateway: new UiPlaybackGatewayAdapter(handler)
+Main->>Cubit: new PlayerCubit(gateway)
+Cubit->>Gateway: subscribe snapshots
+Gateway->>Handler: subscribe internal snapshots
+Handler-->>Gateway: initial idle snapshot
+Gateway-->>Cubit: initial idle snapshot
 Main->>Provider: provide PlayerCubit
 Main->>App: runApp()
 App-->>Main: first frame
@@ -159,13 +179,16 @@ Behavior contract:
 
 - <code>AudioService.init</code> hoàn tất trước <code>runApp</code>.
 - Handler và AudioPlayer chỉ được tạo một lần.
-- PlayerCubit nhận handler qua interface <code>PlaybackGateway</code>.
+- PlayerCubit chỉ nhận <code>UiPlaybackGatewayAdapter</code> qua interface
+  <code>PlaybackGateway</code>; không nhận concrete handler.
 - Initial snapshot là idle, không có current item.
 - Mini player và system notification chưa xuất hiện khi idle.
 
 Failure behavior:
 
-- Nếu bootstrap audio service thất bại, app phải log rõ lỗi và khởi động theo fallback được quyết định trước.
+- Development/test bootstrap failure fail-fast.
+- Production bootstrap failure dùng <code>UnavailablePlaybackGateway</code> không
+  sở hữu engine và phát snapshot <code>bootstrapUnavailable</code>.
 - Không được tạo một AudioPlayer thứ hai để “chữa cháy”.
 
 ## 6. Sequence Diagram — Load queue và autoplay
@@ -176,6 +199,7 @@ autonumber
 actor User
 participant UI as Content Screen
 participant Cubit as PlayerCubit
+participant Gateway as UiPlaybackGatewayAdapter
 participant Handler as AppAudioHandler
 participant Engine as AudioPlayer
 participant AS as audio_service
@@ -183,30 +207,27 @@ participant OS as System Media Controls
 
 User->>UI: Chọn một lesson/track
 UI->>Cubit: openQueue(items, index, autoplay=true)
-Cubit->>Handler: loadQueue(items, index, true)
+Cubit->>Gateway: loadQueue(items, index, true)
+Gateway->>Handler: loadQueue operation(source=ui)
 
-Handler->>Handler: increment loadGeneration
-Handler->>Handler: emit loading snapshot
+Handler->>Handler: validate + create pending context/generation
+Handler->>Handler: emit loading without pending metadata
 Handler-->>Cubit: PlaybackSnapshot(loading)
 Cubit-->>UI: PlayerState(loading)
 
 Handler->>Handler: map PlayerItem to MediaItem
 Handler->>Handler: map PlayerItem to AudioSource
 Handler->>Engine: setAudioSources(sources, initialIndex)
-
-par Engine state events
-  Engine-->>Handler: processingState=loading
-and Queue publication
-  Handler->>AS: queue.add(mediaItems)
-end
-
-Engine-->>Handler: duration/currentIndex/ready
-Handler->>AS: mediaItem.add(currentMediaItem)
-Handler->>AS: playbackState.add(ready, paused)
-AS-->>OS: metadata + available controls
+Engine-->>Handler: loading/duration/currentIndex/ready events
+Handler->>Handler: buffer pending events; do not publish pending item
 
 alt Request vẫn là generation mới nhất
-  Handler-->>Cubit: PlaybackSnapshot(ready, currentItem)
+  Handler->>Handler: atomic commit active queue/item/index
+  Handler->>AS: queue.add(committedMediaItems)
+  Handler->>AS: mediaItem.add(committedCurrentItem)
+  Handler->>AS: playbackState.add(ready, paused)
+  AS-->>OS: committed metadata + available controls
+  Handler-->>Cubit: PlaybackSnapshot(ready, committed currentItem)
   Cubit-->>UI: Render metadata + mini player
   alt autoplay=true
     Handler->>Engine: play()
@@ -224,9 +245,12 @@ Behavior contract:
 
 - Loading state xuất hiện trước khi engine ready.
 - Queue OS và engine được tạo từ cùng một danh sách <code>PlayerItem</code>.
-- Current metadata được publish trước hoặc đồng thời với playback bắt đầu.
+- Pending item/queue không được publish trước latest-ready commit.
+- Current metadata đã commit được publish trước playback bắt đầu.
 - Chỉ generation mới nhất được phép trở thành current queue.
 - Cubit không tự emit current item trước khi handler xác nhận load.
+- Replace A → B giữ outward metadata A cho tới khi B latest-ready; B failure tạo
+  retry context B mà không masquerade B thành active item.
 
 ## 7. Sequence Diagram — Play/Pause từ UI
 
@@ -236,6 +260,7 @@ autonumber
 actor User
 participant UI as MiniPlayer / PlayerControlDock
 participant Cubit as PlayerCubit
+participant Gateway as PlaybackGateway
 participant Handler as AppAudioHandler
 participant Engine as AudioPlayer
 participant AS as audio_service
@@ -243,16 +268,21 @@ participant OS as System Media Controls
 
 User->>UI: Nhấn Play/Pause
 UI->>Cubit: togglePlayback()
+Cubit->>Cubit: invert pending desired intent nếu có, ngược lại invert confirmed state
 
-alt state.playing=false
-  Cubit->>Handler: play()
-  alt processingState=completed
+alt desired intent=Play
+  Cubit->>Gateway: play()
+  Gateway->>Handler: play operation(source=ui)
+  alt processingState=completed và playing=false
     Handler->>Engine: seek(Duration.zero)
+    Handler->>Engine: play()
+  else ready/buffering
+    Handler->>Engine: play() nếu chưa pending/confirmed Play
   end
-  Handler->>Engine: play()
-else state.playing=true
-  Cubit->>Handler: pause()
-  Handler->>Engine: pause()
+else desired intent=Pause
+  Cubit->>Gateway: pause()
+  Gateway->>Handler: pause operation(source=ui)
+  Handler->>Engine: pause() nếu chưa pending/confirmed Pause
 end
 
 Note over Cubit,UI: Không optimistic flip icon
@@ -273,7 +303,10 @@ Behavior contract:
 
 - UI button chỉ đổi icon khi engine stream xác nhận.
 - Nếu engine từ chối play do lỗi/focus, UI không bị kẹt ở trạng thái playing giả.
-- Completed + Play thực hiện replay từ đầu.
+- Completed được chuẩn hóa thành <code>playing=false</code>; Replay thực hiện đúng
+  một <code>seek → play</code>.
+- Private pending desired intent chỉ route rapid Toggle; không được emit thành
+  optimistic PlayerState.
 
 ## 8. Sequence Diagram — Play/Pause từ Lock Screen
 
@@ -343,6 +376,7 @@ end
 Timing policy:
 
 - UI position cadence mục tiêu: khoảng 200 ms.
+- OS position-only resync mục tiêu: khoảng 1 giây; immediate event không đợi cadence.
 - Mini player có thể dùng selector thưa hơn expanded seek bar.
 - Metadata chỉ publish khi track/metadata thay đổi.
 - System timeline dùng update position + update time + speed để nội suy; không spam platform channel mỗi frame.
@@ -357,6 +391,7 @@ actor User
 participant Slider as Seek Slider
 participant Local as Local Seek Preview
 participant Cubit as PlayerCubit
+participant Gateway as UiPlaybackGatewayAdapter
 participant Handler as AppAudioHandler
 participant Engine as AudioPlayer
 participant AS as audio_service
@@ -376,7 +411,8 @@ Note over Slider,Handler: Chưa gọi platform seek
 User->>Slider: onChangeEnd(value)
 Slider->>Local: isDragging=false
 Slider->>Cubit: seekTo(position)
-Cubit->>Handler: seek(position)
+Cubit->>Gateway: seek(position)
+Gateway->>Handler: seek operation(source=ui)
 Handler->>Handler: clamp 0..duration
 Handler->>Engine: seek(clampedPosition)
 Engine-->>Handler: position event
@@ -395,7 +431,8 @@ Behavior contract:
 - Không gọi seek trên từng pixel.
 - Preview là presentation state cục bộ, không phải playback state.
 - Sau khi commit, engine position ghi đè preview.
-- Nếu duration bằng 0 hoặc unknown, slider disabled hoặc indeterminate.
+- Nếu duration bằng 0 hoặc unknown, slider disabled/indeterminate; direct command
+  trả <code>seekUnavailableUnknownDuration</code> và không gọi engine.
 
 ## 11. Sequence Diagram — Remote seek
 
@@ -422,14 +459,15 @@ Handler->>AS: playbackState(updatePosition)
 AS-->>OS: confirmed timeline
 ```
 
-UI và OS dùng cùng <code>AppAudioHandler.seek()</code>, vì vậy không cần cơ chế reconcile riêng.
+UI adapter và OS override hội tụ vào cùng internal seek operation của handler,
+vì vậy không cần cơ chế reconcile riêng.
 
 ## 12. Sequence Diagram — Tua ±10 giây
 
 ```mermaid
 sequenceDiagram
 autonumber
-actor Caller as UI hoặc System Controls
+actor Caller as UI adapter hoặc OS override
 participant Handler as AppAudioHandler
 participant Engine as AudioPlayer
 participant Cubit as PlayerCubit
@@ -448,13 +486,14 @@ Rules:
 - Fast-forward: offset = +10 giây.
 - Không dùng Next/Previous để thay thế.
 - Clamp tránh position âm hoặc vượt duration.
+- Không có item hoặc duration unknown/zero trả typed failure PLR-001 trước engine.
 
 ## 13. Sequence Diagram — Next/Previous trong queue
 
 ```mermaid
 sequenceDiagram
 autonumber
-actor Caller as UI hoặc System Controls
+actor Caller as UI adapter hoặc OS override
 participant Handler as AppAudioHandler
 participant Engine as AudioPlayer
 participant AS as audio_service
@@ -462,7 +501,7 @@ participant Cubit as PlayerCubit
 participant UI as Player Widgets
 
 Caller->>Handler: next() / skipToNext()
-Handler->>Handler: inspect currentIndex and queue
+Handler->>Handler: inspect effective queue/currentIndex/repeat
 
 alt Có next item
   Handler->>Engine: seek(Duration.zero, nextIndex)
@@ -472,23 +511,26 @@ alt Có next item
   Handler->>AS: playbackState(queueIndex=nextIndex)
   Handler-->>Cubit: snapshot with next currentItem
   Cubit-->>UI: update metadata/artwork/transcript
-else Đã ở cuối queue và repeat=all
+else Boundary và repeat=all
   Handler->>Engine: seek(Duration.zero, index=0)
-else Đã ở cuối queue và repeat=off
-  Handler->>Handler: keep completed state
+else Boundary và repeat=off/one
+  Handler->>Handler: idempotent no-op
 end
 ```
 
-Previous policy đề xuất:
+Previous policy canonical:
 
 ```text
 Nếu position > 3 giây:
   seek về đầu current item
 Ngược lại:
-  chuyển previous item nếu có
+  chuyển previous item trong effective order nếu có
+  nếu ở đầu và repeat=all thì wrap tới item cuối
+  nếu ở đầu và repeat=off/one thì no-op
 ```
 
-Ngưỡng 3 giây là product policy và phải được constant hóa, không hard-code rải rác.
+Ngưỡng 3 giây là Application policy dùng chung. Domain queue và OS queue cùng
+publish effective order; repeat-one không chặn explicit navigation.
 
 ## 14. Sequence Diagram — Buffering và phục hồi
 
@@ -544,19 +586,20 @@ participant AS as audio_service
 participant Cubit as PlayerCubit
 participant UI as Player Widgets
 
-Engine-->>Handler: processingState=completed
-Handler->>Handler: inspect repeat mode and queue boundary
+Engine-->>Handler: currentIndex/processing events
 
-alt repeat=one
-  Handler->>Engine: seek(Duration.zero, currentIndex)
-  Handler->>Engine: play()
-else Còn next item
-  Handler->>Engine: seek(Duration.zero, nextIndex)
-else repeat=all và ở cuối queue
-  Handler->>Engine: seek(Duration.zero, index=0)
-else Hết queue, repeat=off
-  Handler->>AS: playbackState(completed)
-  Handler-->>Cubit: snapshot(completed)
+alt Engine auto-advance hoặc repeat-one/all
+  Handler->>Handler: observe effective index/state only
+  Handler->>AS: publish confirmed item/index/state once
+  Handler-->>Cubit: confirmed snapshot once
+else Final item và repeat=off
+  Handler->>Handler: enter one-shot end normalization
+  opt engine playing=true
+    Handler->>Engine: pause()
+    Engine-->>Handler: playing=false
+  end
+  Handler->>AS: playbackState(completed, playing=false)
+  Handler-->>Cubit: snapshot(completed, playing=false, item retained)
   Cubit-->>UI: show Replay
 end
 ```
@@ -565,6 +608,11 @@ Policy:
 
 - Completed không tự clear current item.
 - Người dùng vẫn thấy metadata và có thể Replay.
+- Engine là owner duy nhất auto-advance/repeat; handler không manual-seek trên
+  completion path.
+- Final repeat-off được normalize đúng một lần thành
+  <code>completed × playing=false</code>.
+- Replay là <code>seek(Duration.zero, currentIndex) → play()</code>.
 - Explicit Stop mới clear queue/current item và gỡ system card.
 
 ## 16. Sequence Diagram — Audio interruption
@@ -585,6 +633,7 @@ External->>Session: audio focus interruption begins
 Session->>Engine: interruption callback
 Engine->>Engine: pause according to speech policy
 Engine-->>Handler: playing=false
+Handler->>Handler: passive bookkeeping/log only; no second Pause
 
 par Sync app
   Handler-->>Cubit: paused snapshot
@@ -610,7 +659,7 @@ Ownership rule:
 
 - <code>just_audio</code> là owner xử lý interruption runtime.
 - Ứng dụng cấu hình policy qua <code>audio_session</code>.
-- Không tạo listener thứ hai để cùng pause/resume nếu engine đã xử lý.
+- Handler chỉ passive-observe; không tạo listener thứ hai gọi pause/resume.
 - Auto-resume không được xảy ra nếu người dùng chủ động Pause trong lúc interruption.
 
 ## 17. Sequence Diagram — Rút tai nghe
@@ -630,6 +679,7 @@ User->>Device: Rút tai nghe / mất Bluetooth route
 Device->>Session: becomingNoisy event
 Session->>Engine: pause
 Engine-->>Handler: playing=false
+Handler->>Handler: clear resume eligibility; passive log only
 Handler-->>Cubit: paused snapshot
 Cubit-->>UI: show Play
 ```
@@ -637,7 +687,8 @@ Cubit-->>UI: show Play
 Behavior contract:
 
 - Becoming noisy luôn Pause để tránh phát loa ngoài bất ngờ.
-- Không auto-resume khi người dùng cắm lại tai nghe.
+- Không auto-resume khi người dùng cắm lại tai nghe hoặc route quay lại.
+- Một noisy event tạo tối đa một engine Pause.
 
 ## 18. Sequence Diagram — Error và Retry
 
@@ -648,30 +699,41 @@ participant Engine as AudioPlayer
 participant Handler as AppAudioHandler
 participant AS as audio_service
 participant Cubit as PlayerCubit
+participant Gateway as PlaybackGateway
 participant UI as Player Widgets
 actor User
 
 Engine--xHandler: PlayerException
 Handler->>Handler: mapFailure(exception)
-Handler->>Handler: retain currentItem + last position
+Handler->>Handler: retain active context + create target-specific RetryContext
 
 par App error state
   Handler-->>Cubit: snapshot(error, failure)
   Cubit-->>UI: show error + Retry
 and System error state
-  Handler->>AS: playbackState(error or stopped)
+  Handler->>AS: playbackState(error, playing=false, stable error code)
 end
 
-alt failure.isRecoverable=true
+alt failure.isRecoverable=true và RetryContext còn current
   User->>UI: Nhấn Retry
   UI->>Cubit: retry()
-  Cubit->>Handler: loadQueue(currentQueue, currentIndex, autoplay=true)
-  Handler->>Engine: reload source
-  Engine-->>Handler: ready
-  Handler->>Engine: seek(lastKnownPosition)
-  Handler->>Engine: play()
-  Engine-->>Handler: playing
-  Handler-->>Cubit: recovered snapshot
+  Cubit->>Gateway: retry()
+  Gateway->>Handler: retry operation(source=ui)
+  Handler->>Handler: new generation + publication barrier
+  Handler->>Engine: load retry target(autoplay=false)
+  Engine-->>Handler: ready + new duration
+  Handler->>Handler: verify latest + clamp saved position
+  Handler->>Engine: seek(clamped saved position)
+  Handler->>Handler: verify latest + atomic commit target
+  Handler->>AS: publish committed queue/item/ready
+  Handler-->>Cubit: recovered ready snapshot at restored position
+  alt latest desiredPlaying=true
+    Handler->>Engine: play() đúng một lần
+    Engine-->>Handler: playing=true
+    Handler-->>Cubit: confirmed playing snapshot
+  else latest desiredPlaying=false
+    Handler->>Handler: remain paused
+  end
 else failure.isRecoverable=false
   UI-->>User: Show unsupported/unavailable message
 end
@@ -679,9 +741,13 @@ end
 
 Behavior contract:
 
-- Error state giữ metadata để UI giải thích track nào lỗi.
-- Retry là hành động rõ ràng của người dùng nên có thể autoplay sau khi recover.
-- Request retry vẫn phải tuân theo <code>loadGeneration</code>.
+- Runtime error giữ active metadata; initial failure không publish metadata;
+  replace A → B failure giữ A nhưng Retry nhắm B.
+- Retry không publish target ở position zero trước restore.
+- Pause trong retry đổi desired intent thành false; Stop/load/navigation mới
+  invalidate retry.
+- Retry không có recoverable/current context trả typed
+  <code>retryUnavailable</code> và không gọi engine.
 - Không tạo timer retry vô hạn.
 
 ## 19. Sequence Diagram — Hai request load cạnh tranh
@@ -692,18 +758,21 @@ autonumber
 actor User
 participant UI as Content Screen
 participant Cubit as PlayerCubit
+participant Gateway as UiPlaybackGatewayAdapter
 participant Handler as AppAudioHandler
 participant Engine as AudioPlayer
 
 User->>UI: Chọn track A
 UI->>Cubit: open(A)
-Cubit->>Handler: loadQueue([A])
+Cubit->>Gateway: loadQueue([A])
+Gateway->>Handler: loadQueue operation(source=ui)
 Handler->>Handler: generation=1
 Handler->>Engine: load A
 
 User->>UI: Chọn track B ngay lập tức
 UI->>Cubit: open(B)
-Cubit->>Handler: loadQueue([B])
+Cubit->>Gateway: loadQueue([B])
+Gateway->>Handler: loadQueue operation(source=ui)
 Handler->>Handler: generation=2
 Handler->>Engine: load B
 
@@ -729,6 +798,7 @@ sequenceDiagram
 autonumber
 actor Caller as User hoặc System
 participant Cubit as PlayerCubit
+participant Gateway as UiPlaybackGatewayAdapter
 participant Handler as AppAudioHandler
 participant Engine as AudioPlayer
 participant AS as audio_service
@@ -737,7 +807,8 @@ participant Host as PlayerHost
 
 opt Stop đến từ UI
   Caller->>Cubit: stop()
-  Cubit->>Handler: stop()
+  Cubit->>Gateway: stop()
+  Gateway->>Handler: stop operation(source=ui)
 end
 
 opt Stop đến từ OS
@@ -745,24 +816,38 @@ opt Stop đến từ OS
   AS->>Handler: stop()
 end
 
+Handler->>Handler: enter stopping barrier + increment epoch
+Handler->>Handler: invalidate load/retry/navigation/seek cũ
 Handler->>Engine: stop()
-Engine-->>Handler: idle / playing=false
-Handler->>Handler: clear current item and queue
-Handler->>AS: mediaItem.add(null)
-Handler->>AS: queue.add(empty)
-Handler->>AS: playbackState(idle, playing=false)
-AS-->>OS: remove/deactivate media controls
-Handler-->>Cubit: idle snapshot
-Cubit-->>Host: currentItem=null
-Host->>Host: remove MiniPlayer
+
+alt Engine Stop thành công
+  Engine-->>Handler: idle / playing=false
+  Handler->>Engine: reset speed=1.0, repeat=off, shuffle=false
+  Handler->>Handler: atomically replace internal state with canonical idle
+  Handler->>AS: mediaItem.add(null)
+  Handler->>AS: queue.add(empty)
+  Handler->>AS: playbackState(idle, playing=false, controls/actions empty)
+  AS-->>OS: remove/deactivate media controls
+  Handler-->>Cubit: đúng một idle snapshot
+  Cubit-->>Host: currentItem=null
+  Host->>Host: remove MiniPlayer + pop player route nếu top-most
+else Engine Stop thất bại
+  Handler->>Handler: retain active metadata/session + map stopFailed
+  Handler->>AS: playbackState(error, latest confirmed playing)
+  Handler-->>Cubit: error snapshot; không idle giả
+  Cubit-->>Host: keep current route/player
+end
 ```
 
 Behavior contract:
 
 - Stop khác Pause.
 - Pause giữ current item/system card.
-- Stop clear current item, queue và system card.
+- Successful Stop clear current item, queue và system card theo đúng publication
+  order; engine events trong barrier không tạo snapshot trung gian.
 - Stop không dispose handler singleton; app có thể load nội dung mới sau đó.
+- Stop lặp sau canonical idle là no-op; Stop thất bại có thể được thử lại.
+- Navigation reaction không phát thêm Stop/Pause và không pop route khác.
 
 ## 21. Sequence Diagram — Mở/đóng Expanded Player
 
@@ -878,6 +963,8 @@ Transition rules:
 - <code>Play</code> không mặc định chuyển processing state; có thể vẫn buffering.
 - <code>Stop</code> đưa processing state về idle.
 - <code>Completed</code> giữ current item đến khi replay, load mới hoặc stop.
+- Final repeat-off được normalize thành <code>completed × playing=false</code>;
+  auto-advance/repeat giữa queue do engine sở hữu.
 
 ## 24. State Machine — Play intent
 
@@ -892,6 +979,7 @@ Playing --> Paused: pause accepted
 Playing --> Paused: interruption
 Playing --> Paused: becoming noisy
 Playing --> Paused: stop/error policy
+Playing --> Paused: final repeat-off normalization
 
 Paused --> Playing: remote play
 Paused --> Playing: resume after permitted interruption
@@ -912,7 +1000,7 @@ Ví dụ:
 ready × playing      → đang phát bình thường
 buffering × playing  → đang muốn phát nhưng chờ dữ liệu
 ready × paused       → pause và có thể resume ngay
-completed × playing  → tới cuối, hiển thị Replay
+completed × paused   → tới cuối, giữ metadata và hiển thị Replay
 error × paused       → lỗi, có thể Retry
 ```
 
@@ -928,7 +1016,7 @@ Published --> Playing: playbackState.playing=true
 Playing --> Paused: pause/interruption
 Paused --> Playing: play/resume
 
-Playing --> Published: completed
+Playing --> Published: final completed normalized paused
 Paused --> Published: metadata/state update
 Published --> Playing: replay
 
@@ -974,6 +1062,10 @@ CompletedQueue --> Empty: stop
 ErrorItem --> Empty: stop
 ```
 
+Active và pending là hai context khác nhau: replace A → B giữ A outward trong
+lúc B loading; B chỉ thành ActiveItem sau latest-ready commit. B failure giữ A
+metadata nhưng Error/Retry target vẫn là B.
+
 ## 27. State Machine — Expanded player route
 
 ```mermaid
@@ -1002,11 +1094,13 @@ flowchart TD
     A([Command bắt đầu]) --> B{Nguồn command?}
     B -->|UI| C[Player widget gọi PlayerCubit]
     C --> D[PlayerCubit delegate PlaybackGateway]
+    D --> E1[UI adapter gắn source=ui]
     B -->|OS| E[audio_service gọi AudioHandler callback]
-    D --> F[AppAudioHandler nhận command]
+    E1 --> F[AppAudioHandler internal operation]
     E --> F
     F --> G{Command hợp lệ với current state?}
-    G -->|Không| H[Return hoặc báo domain failure]
+    G -->|Typed failure| H[Return PlayerCommandFailure; snapshot không đổi]
+    G -->|Idempotent no-op| P
     G -->|Có| I[Điều khiển AudioPlayer]
     I --> J[Chờ engine stream]
     J --> K[Build PlaybackSnapshot]
@@ -1025,6 +1119,7 @@ flowchart TD
 - Command có hợp lệ ở queue boundary không?
 - Seek target có duration hợp lệ không?
 - Request load có còn là latest generation không?
+- Matrix PLR-008 quy định execute/no-op/typed failure; diagram không tự chọn.
 
 ## 29. Activity Diagram — Load queue
 
@@ -1035,8 +1130,9 @@ flowchart TD
     C -->|Không| D[Emit validation failure]
     C -->|Có| E[Increment loadGeneration]
     E --> F[Emit loading snapshot]
-    F --> G[Map PlayerItem sang MediaItem]
-    G --> H[Map PlayerItem sang AudioSource]
+    F --> G[Create pending context; keep active metadata]
+    G --> G1[Map PlayerItem sang MediaItem]
+    G1 --> H[Map PlayerItem sang AudioSource]
     H --> I[AudioPlayer.setAudioSources]
     I --> J{Load thành công?}
     J -->|Không| K{Interrupted bởi load mới?}
@@ -1044,7 +1140,7 @@ flowchart TD
     K -->|Không| M[Map và emit failure]
     J -->|Có| N{Generation vẫn mới nhất?}
     N -->|Không| L
-    N -->|Có| O[Publish queue + current item]
+    N -->|Có| O[Atomic commit active queue + current item]
     O --> P[Emit ready snapshot]
     P --> Q{Autoplay?}
     Q -->|Có| R[AudioPlayer.play]
@@ -1092,7 +1188,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A([Seek request]) --> B{Có current item?}
-    B -->|Không| C[Ignore hoặc return failure]
+    B -->|Không| C[Return noCurrentItem]
     B -->|Có| D{Duration đã biết và > 0?}
     D -->|Không| E[Disable/reject seek]
     D -->|Có| F[Clamp target 0..duration]
@@ -1112,7 +1208,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A([Playback error]) --> B[Normalize PlayerFailure]
-    B --> C[Retain item, queue và last position]
+    B --> C[Retain active context + create target-specific RetryContext]
     C --> D[Emit error snapshot]
     D --> E[Update system playback state]
     E --> F{Recoverable?}
@@ -1120,13 +1216,16 @@ flowchart TD
     F -->|Có| H[Show Retry]
     H --> I{User taps Retry?}
     I -->|Không| J([Remain error])
-    I -->|Có| K[Start new loadGeneration]
-    K --> L[Reload current queue/item]
+    I -->|Có| K[Start new retry generation + barrier]
+    K --> L[Reload retry target autoplay=false]
     L --> M{Ready?}
     M -->|Không| B
-    M -->|Có| N[Seek last known position]
-    N --> O[Play]
-    O --> P([Recovered])
+    M -->|Có| N[Clamp + seek saved position]
+    N --> O[Atomic commit target]
+    O --> O1{Latest desiredPlaying?}
+    O1 -->|Có| O2[Play exactly once]
+    O1 -->|Không| P([Recovered paused])
+    O2 --> P1([Recovered playing after engine confirm])
     G --> Q([Kết thúc])
 ```
 
@@ -1134,16 +1233,20 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A([Stop]) --> B[AudioPlayer.stop]
-    B --> C[Set playing=false và processing=idle]
-    C --> D[Clear current item]
-    D --> E[Clear queue/index]
-    E --> F[Publish null media item]
-    F --> G[Publish empty queue]
-    G --> H[Deactivate/remove system media controls]
-    H --> I[Emit idle snapshot]
-    I --> J[PlayerHost removes MiniPlayer]
-    J --> K([Handler remains reusable])
+    A([Stop]) --> B[Enter publication barrier + increment epoch]
+    B --> C[Invalidate load/retry/navigation/seek]
+    C --> D[AudioPlayer.stop]
+    D --> E{Stop thành công?}
+    E -->|Không| F[Retain active session + emit stopFailed]
+    F --> G([Không pop route; cho phép retry Stop])
+    E -->|Có| H[Reset engine options to baseline]
+    H --> I[Atomically install canonical idle]
+    I --> J[Publish null media item]
+    J --> K[Publish empty queue]
+    K --> L[Publish OS idle + remove card]
+    L --> M[Emit exactly one idle snapshot]
+    M --> N[Remove MiniPlayer + guarded route pop]
+    N --> O([Handler remains reusable])
 ```
 
 ## 34. Concurrency và Ordering Contracts
@@ -1177,12 +1280,14 @@ loading
 Thứ tự khi Stop:
 
 ```text
-engine stopped
-→ playback idle
+stopping barrier + epoch invalidated
+→ engine stopped
+→ engine options reset
+→ internal canonical idle installed atomically
 → media item cleared
 → queue cleared
-→ system card removed
-→ Cubit idle
+→ OS playback idle/system card removed
+→ exactly one Cubit idle snapshot
 ```
 
 ### 34.4. Duplicate suppression
@@ -1200,13 +1305,14 @@ Không publish lại:
 | Hành vi | Mục tiêu |
 |---|---|
 | UI position update | Khoảng 200 ms |
+| OS position-only resync | Khoảng 1 giây |
 | Remote Play/Pause phản ánh lên UI | Dưới khoảng 500 ms |
 | Seek commit | Một platform call cho mỗi drag |
 | Metadata publication | Khi current item/metadata đổi |
 | Queue publication | Khi queue/order đổi |
 | Artwork rebuild | Không theo position |
 | Transcript active cue | Derived từ position, chỉ rebuild vùng cue |
-| System timeline | Dùng updatePosition/updateTime/speed để nội suy |
+| System timeline | Dùng updatePosition/updateTime/speed để nội suy; seek/play/pause/item/speed/error/Stop publish ngay |
 
 Nếu platform stream phát event dày hơn UI cần, throttle ở projection stream hoặc selector; không làm mất event lifecycle quan trọng.
 
@@ -1247,17 +1353,16 @@ Các event nên log có cấu trúc để debug hành vi:
 | <code>player_error</code> | code, itemId, recoverable |
 | <code>player_stopped</code> | itemId, reason |
 
-<code>source</code> phân biệt:
+<code>source</code> canonical:
 
 - ui.
-- lock_screen.
-- notification.
-- headset.
-- control_center.
-- web_media_session.
+- systemRemote.
 - interruption.
 
-Logging không được làm thay đổi command path hoặc trở thành dependency bắt buộc của playback.
+Chỉ dùng `lock_screen`, `notification`, `headset`, `control_center` hoặc
+`web_media_session` khi callback thực sự cung cấp provenance đó; không suy đoán
+từ loại command. Logging không được làm thay đổi command path hoặc trở thành
+dependency bắt buộc của playback.
 
 ## 38. Behavioral Test Scenarios
 
@@ -1328,21 +1433,48 @@ And mini player biến mất
 And handler vẫn có thể load item mới
 ```
 
+### 38.7. Completion và Replay
+
+```gherkin
+Given engine sequence đang phát item không phải cuối
+When item hoàn tất
+Then engine tự chuyển item đúng một lần
+And handler không gọi manual next hoặc seek
+
+Given item cuối completed và repeat off
+When handler nhận engine completion
+Then handler normalize đúng một lần thành completed và playing=false
+And metadata/current item vẫn còn
+When người dùng chọn Replay
+Then engine nhận seek zero trước Play, mỗi call đúng một lần
+```
+
+### 38.8. Retry pending target
+
+```gherkin
+Given A đang active và replace B thất bại
+Then metadata outward vẫn là A
+And failure và RetryContext target là B
+When Retry thành công
+Then B được seek restore trước khi commit metadata
+And Pause trong lúc Retry ngăn Play sau commit
+```
+
 ## 39. Traceability Matrix
 
 | Behavior | Sequence | State Machine | Activity | Class chịu trách nhiệm |
 |---|---:|---:|---:|---|
-| Bootstrap | 5 | 25 | — | main, AudioService, AppAudioHandler |
-| Load/autoplay | 6 | 23, 26 | 29 | PlayerCubit, AppAudioHandler |
-| UI Play/Pause | 7 | 24 | 28 | PlayerCubit, AppAudioHandler |
+| Bootstrap | 5 | 25 | — | main, AudioService, AppAudioHandler, engine, UI adapter |
+| Load/autoplay | 6 | 23, 26 | 29 | PlayerCubit, UI adapter, Handler, engine |
+| UI Play/Pause | 7 | 24 | 28 | PlayerCubit, UI adapter, Handler, engine |
 | Remote Play/Pause | 8 | 24, 25 | 28 | audio_service, AppAudioHandler |
-| Position sync | 9 | 23, 24 | 30 | AudioPlayer, AppAudioHandler |
+| Position sync | 9 | 23, 24 | 30 | PlaybackEngine, AppAudioHandler, UI adapter |
 | Slider seek | 10 | 23 | 31 | PlayerControlDock, Handler |
 | Remote seek | 11 | 23 | 31 | audio_service, Handler |
 | Skip ±10s | 12 | 23 | 31 | Handler |
 | Next/Previous | 13 | 26 | 28 | Handler |
 | Buffering | 14 | 23 | 30 | AudioPlayer, Handler |
-| Completion | 15 | 23, 26 | 30 | Handler |
+| Completion | 15 | 23, 24, 26 | 30 | AudioPlayer + Handler end normalizer |
 | Interruption | 16 | 24 | 30 | AudioSession, AudioPlayer |
 | Becoming noisy | 17 | 24 | 30 | AudioSession, AudioPlayer |
 | Error/Retry | 18 | 23, 26 | 32 | Handler, PlayerCubit |
@@ -1366,6 +1498,8 @@ And handler vẫn có thể load item mới
 - [ ] Repeat one/all/off có behavior được kiểm thử.
 - [ ] Previous policy dùng một constant chung.
 - [ ] Completed giữ metadata và cho phép Replay.
+- [ ] Final completed được normalize thành playing=false đúng một lần.
+- [ ] Retry restore trước commit và retry đúng pending target.
 - [ ] Pause giữ system card.
 - [ ] Stop clear system card, queue và mini player.
 - [ ] Interruption chỉ có một owner.
@@ -1380,8 +1514,9 @@ Cấu trúc động mục tiêu được rút gọn thành hai phương trình:
 
 ```text
 Command path:
-(UI Intent ∪ OS Intent)
-→ AppAudioHandler
+UI Intent → PlayerCubit → PlaybackGateway/UI adapter
+OS Intent → BaseAudioHandler callback
+→ cùng AppAudioHandler internal operation
 → AudioPlayer
 ```
 
@@ -1389,7 +1524,7 @@ Command path:
 State path:
 AudioPlayer Event
 → AppAudioHandler
-→ (PlaybackSnapshot ∪ audio_service.PlaybackState)
+→ (PlaybackGateway snapshot ∪ audio_service.PlaybackState)
 → (PlayerCubit/UI ∪ System Media Controls)
 ```
 

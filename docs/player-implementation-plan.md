@@ -1,9 +1,11 @@
 # Kế hoạch triển khai Player đa nền tảng
 
-> Trạng thái: Đã chốt phương án  
-> Cập nhật: 2026-07-11  
-> Phạm vi release: Android, iOS, Web và macOS  
+> Trạng thái: Đã chốt phương án<br>
+> Cập nhật: 2026-08-02<br>
+> Phạm vi release: Android, iOS, Web và macOS<br>
 > Ngoài phạm vi hiện tại: Windows
+
+Tài liệu này là projection triển khai của [Player Architecture Decisions](./player-architecture-decisions.md). Khi có khác biệt, ADR là chuẩn và tài liệu này phải được sửa ngay trong cùng thay đổi.
 
 ## 1. Mục tiêu
 
@@ -50,19 +52,25 @@ Tài liệu tham khảo:
 ### 3.1. Phương trình luồng dữ liệu
 
 ~~~text
-(UI Intent ∪ OS Intent)
-          ↓
-   AppAudioHandler
-          ↓
-  just_audio.AudioPlayer
-          ↓ engine streams
-   PlaybackSnapshot
-       ↙         ↘
-PlayerCubit    audio_service
-    ↓              ↓
-Toàn bộ UI     Lock screen /
-               Notification /
-               Control Center
+UI Intent                         OS Intent
+    ↓                                 ↓
+PlayerCubit                     AppAudioHandler
+    ↓ PlaybackGateway                  ↑
+UiPlaybackGatewayAdapter ──→ UiPlaybackCommandTarget
+                                      ↓
+                               PlaybackEngine
+                                      ↓
+                           JustAudioPlaybackEngine
+                                      ↓
+                          just_audio.AudioPlayer
+                                      ↓ engine streams
+                               AppAudioHandler
+                                 ↙          ↘
+                 UiPlaybackGatewayAdapter   audio_service
+                           ↓                      ↓
+                      PlayerCubit          Lock screen /
+                           ↓               Notification /
+                      Toàn bộ UI            Control Center
 ~~~
 
 ### 3.2. Các bất biến bắt buộc
@@ -71,17 +79,18 @@ Toàn bộ UI     Lock screen /
 UI không tự sửa playing hoặc progress.
 Cubit không mô phỏng audio engine.
 OS controls không phụ thuộc vào Cubit.
-Chỉ có một AudioPlayer trong toàn ứng dụng.
+Chỉ có một AppAudioHandler, một JustAudioPlaybackEngine và một AudioPlayer trong toàn ứng dụng.
 Audio engine là nguồn sự thật duy nhất.
 ~~~
 
 Luồng command:
 
 1. Mini player, expanded player hoặc màn hình khác gọi <code>PlayerCubit</code>.
-2. Cubit chuyển command sang <code>PlaybackGateway</code>.
+2. Cubit chuyển command sang <code>PlaybackGateway</code>; production binding là <code>UiPlaybackGatewayAdapter</code>.
 3. Lock screen, notification, headset và Control Center gọi trực tiếp <code>AppAudioHandler</code>.
-4. <code>AppAudioHandler</code> điều khiển một <code>AudioPlayer</code>.
-5. Stream thật từ engine cập nhật cả Cubit và system media controls.
+4. Hai đường command hội tụ tại cùng internal operation của <code>AppAudioHandler</code>, rồi handler điều khiển <code>PlaybackEngine</code>.
+5. Production <code>JustAudioPlaybackEngine</code> sở hữu duy nhất một <code>AudioPlayer</code>.
+6. Stream thật từ engine cập nhật Cubit qua adapter và cập nhật system media controls qua <code>audio_service</code>.
 
 Không phát sinh optimistic state kiểu tự đảo <code>isPlaying</code> trong Cubit. Trạng thái chính thức luôn quay về từ engine stream.
 
@@ -91,14 +100,28 @@ Không phát sinh optimistic state kiểu tự đảo <code>isPlaying</code> tro
 lib/features/player/
 ├── domain/
 │   ├── player_item.dart
-│   └── playback_snapshot.dart
+│   ├── playback_snapshot.dart
+│   ├── player_failure.dart
+│   └── player_command_failure.dart
 ├── application/
-│   └── playback_gateway.dart
+│   ├── playback_gateway.dart
+│   ├── player_cubit.dart
+│   ├── player_state.dart
+│   └── player_command_policies.dart
 ├── infrastructure/
-│   └── app_audio_handler.dart
+│   ├── app_audio_handler.dart
+│   ├── command_source.dart
+│   ├── ui_playback_command_target.dart
+│   ├── ui_playback_gateway_adapter.dart
+│   ├── engine/
+│   │   ├── playback_engine.dart
+│   │   └── just_audio_playback_engine.dart
+│   ├── playback_contexts.dart
+│   ├── playback_mappers.dart
+│   └── unavailable_playback_gateway.dart
 └── presentation/
     ├── cubit/
-    │   └── player_cubit.dart
+    │   └── player_cubit.dart  # LegacyPlayerCubit, migration-only đến PLR-110
     ├── expanded_player_screen.dart
     └── widgets/
         ├── mini_player.dart
@@ -143,8 +166,10 @@ Quy ước:
 
 - <code>id</code> là content ID ổn định, không mặc định dùng URL.
 - URL phát audio nằm ở <code>audioUri</code>.
-- Khi chuyển sang <code>audio_service.MediaItem</code>, URL có thể được đặt trong <code>extras</code>.
-- <code>artUri</code> phải dùng được bởi hệ điều hành; ưu tiên HTTPS hoặc file cache cục bộ hợp lệ.
+- <code>audioUri</code>: chấp nhận <code>https</code> và asset trên mọi nền tảng; <code>file</code> chỉ trên native; từ chối <code>http</code> và mọi scheme khác trong release này.
+- <code>artUri</code>: chấp nhận <code>https</code> trên mọi nền tảng và <code>file</code> trên native; từ chối <code>http</code> và scheme khác.
+- <code>extras</code> phải immutable sâu và chỉ gồm <code>null</code>, <code>bool</code>, <code>int</code>, finite <code>double</code>, <code>String</code>, <code>Uri</code>, <code>Duration</code>, <code>List</code> hợp lệ hoặc <code>Map&lt;String, Object?&gt;</code> hợp lệ. Từ chối cycle, custom object, <code>Set</code>, key không phải <code>String</code> và số không finite.
+- Khi chuyển sang <code>audio_service.MediaItem</code>, mapper hạ tầng serialize URI, duration và extras theo contract trên.
 
 ### 5.2. PlaybackSnapshot
 
@@ -183,7 +208,9 @@ hasPrevious
 - <code>playing=true + ready</code>: đang phát.
 - <code>playing=true + buffering</code>: người dùng muốn phát, engine đang chờ dữ liệu.
 - <code>playing=false + ready</code>: đã pause nhưng dữ liệu sẵn sàng.
-- <code>playing=true + completed</code>: đã tới cuối track, UI cần hiển thị replay.
+- <code>playing=false + completed</code>: đã tới cuối queue với repeat off; handler đã phát đúng một lệnh chuẩn hóa <code>pause</code>, UI hiển thị Replay.
+
+<code>queue</code> và <code>currentIndex</code> luôn biểu diễn effective queue order đang được engine dùng sau khi áp dụng shuffle. Domain snapshot và OS queue phải cùng một thứ tự.
 
 ## 6. PlaybackGateway
 
@@ -207,31 +234,48 @@ abstract interface class PlaybackGateway {
   Future<void> setSpeed(double speed);
   Future<void> setRepeatMode(PlayerRepeatMode mode);
   Future<void> setShuffleEnabled(bool enabled);
+  Future<void> retry();
 }
 ~~~
 
-Interface này là biên duy nhất giữa Cubit và hạ tầng playback. Nó cho phép widget test dùng <code>FakePlaybackGateway</code> mà không khởi tạo platform plugin.
+Interface này là biên duy nhất giữa Cubit và hạ tầng playback. <code>UiPlaybackGatewayAdapter</code> là production implementation; <code>AppAudioHandler</code> không implement public Gateway. Phân tách này cho phép widget test dùng <code>FakePlaybackGateway</code> mà không khởi tạo platform plugin.
 
 ## 7. AppAudioHandler
 
-<code>AppAudioHandler</code> là object trung tâm:
+<code>AppAudioHandler</code> là application service trung tâm, nhưng không trực tiếp sở hữu plugin:
 
 ~~~dart
 final class AppAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler
-    implements PlaybackGateway {
+    implements UiPlaybackCommandTarget {
+  factory AppAudioHandler.production() =>
+      AppAudioHandler(JustAudioPlaybackEngine());
+
+  AppAudioHandler(this._engine);
+
+  final PlaybackEngine _engine;
+}
+
+final class JustAudioPlaybackEngine implements PlaybackEngine {
   final AudioPlayer _player = AudioPlayer();
+}
+
+final class UiPlaybackGatewayAdapter implements PlaybackGateway {
+  UiPlaybackGatewayAdapter(this._target);
+
+  final UiPlaybackCommandTarget _target;
 }
 ~~~
 
 ### 7.1. Trách nhiệm
 
-- Sở hữu duy nhất một <code>AudioPlayer</code>.
+- Sở hữu <code>PlaybackEngine</code>; production adapter của engine sở hữu duy nhất một <code>AudioPlayer</code>.
 - Chuyển <code>PlayerItem</code> thành <code>MediaItem</code> và <code>AudioSource</code>.
-- Giữ queue của <code>just_audio</code> và <code>audio_service</code> đồng bộ.
+- Giữ effective queue order của engine, domain và <code>audio_service</code> đồng bộ.
 - Map stream engine sang <code>PlaybackSnapshot</code>.
 - Broadcast <code>mediaItem</code>, <code>queue</code> và <code>playbackState</code> cho hệ điều hành.
 - Nhận command từ UI và system controls.
+- Quản lý <code>ActivePlaybackContext</code>, <code>PendingLoadContext</code>, <code>RetryContext</code>, generation token và publication epoch.
 - Quản lý lifecycle của subscriptions.
 
 ### 7.2. Mapping processing state
@@ -269,23 +313,29 @@ previous / next      → điều hướng queue
 
 ### 7.4. Chính sách command
 
-- <code>play()</code>: nếu completed thì seek về đầu trước khi phát.
+- Mọi command không hợp lệ trả <code>PlayerCommandFailure</code> có typed code; boundary navigation hợp lệ là no-op, không phải failure.
+- <code>play()</code>: nếu completed thì thực hiện Replay theo đúng thứ tự <code>seek(Duration.zero)</code> rồi <code>play()</code>.
 - <code>pause()</code>: giữ media session và current item.
-- <code>stop()</code>: dừng engine, clear queue/current item và gỡ system controls.
-- <code>seek()</code>: clamp trong khoảng 0 đến duration.
+- <code>stop()</code>: mở publication barrier, dừng engine, reset option baseline, commit atomic idle/item null/queue rỗng, phát OS idle rồi đóng barrier. Nếu engine stop lỗi thì giữ session hiện tại và phát <code>stopFailed</code>; Stop lần hai sau thành công là no-op.
+- <code>seek()</code>/<code>skipBy()</code>: khi không có current item trả <code>noCurrentItem</code>; khi duration chưa biết hoặc bằng 0 trả <code>seekUnavailableUnknownDuration</code>. UI đồng thời disable seek.
 - <code>skipBy()</code>: tính position mới rồi gọi seek.
-- <code>previous()</code>: nếu position lớn hơn ngưỡng sản phẩm, có thể seek về đầu trước khi lùi track.
-- <code>loadQueue()</code>: chỉ kết quả của request mới nhất được phép trở thành current queue.
+- <code>previous()</code>: nếu position &gt; 3 giây thì seek đầu track; nếu position ≤ 3 giây thì lùi theo effective queue; tại boundary là no-op.
+- <code>next()</code>/<code>previous()</code>: repeat all được wrap; repeat off và one không wrap cho explicit navigation.
+- <code>setSpeed()</code>: chỉ nhận preset UI <code>0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0</code> hoặc API value finite trong <code>[0.5, 2.0]</code>.
+- <code>loadQueue()</code>: từ chối queue rỗng, index ngoài range, duplicate ID và item không hợp lệ; chỉ request mới nhất được commit atomic sau khi load thành công.
+- <code>retry()</code>: dùng target cụ thể trong <code>RetryContext</code>, không suy từ snapshot đã thay đổi; thứ tự là load với autoplay false → xác nhận latest → clamp/seek → xác nhận latest → atomic commit → play nếu desired intent vẫn true.
+- <code>stop()</code>, load mới và navigation mới làm mất hiệu lực retry context cũ.
 
 ## 8. PlayerCubit toàn app
 
-<code>PlayerCubit</code> vẫn được đặt phía trên <code>MaterialApp</code>, nhưng không trực tiếp sở hữu audio engine.
+<code>PlayerCubit</code> thuộc Application và được provide phía trên <code>MaterialApp</code>, nhưng không trực tiếp sở hữu audio engine. Cubit cũ trong Presentation chỉ tồn tại qua bridge tạm thời trong migration và phải bị xóa khi toàn bộ consumer đã chuyển xong.
 
 Trách nhiệm:
 
 - Subscribe <code>PlaybackGateway.snapshots</code>.
 - Chuyển snapshot thành immutable <code>PlayerState</code>.
 - Cung cấp command đơn giản cho UI.
+- Giữ private pending desired-playing intent để hai lần Toggle liên tiếp vẫn suy ra đúng ý định khi snapshot engine chưa kịp quay về; giá trị này không được publish như playback state.
 - Hủy subscription trong <code>close()</code>.
 
 Các method dự kiến:
@@ -308,7 +358,7 @@ toggleShuffle()
 retry()
 ~~~
 
-Cubit không chứa timer tự tăng position. Position luôn đến từ audio engine.
+Cubit không chứa timer tự tăng position và không optimistic emit <code>playing</code>. Position và trạng thái chính thức luôn đến từ audio engine.
 
 ## 9. Tách navigation khỏi playback state
 
@@ -379,7 +429,7 @@ Dùng <code>BlocSelector</code> hoặc <code>buildWhen</code> theo từng lát s
 - Speed/repeat/shuffle.
 - Queue navigation.
 
-Position stream có thể cập nhật khoảng 200 ms nhưng không được rebuild toàn bộ expanded player.
+Position stream target 200 ms nhưng không được rebuild toàn bộ expanded player.
 
 ## 11. Bootstrap ứng dụng
 
@@ -390,10 +440,11 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final handler = await AudioService.init(
-    builder: AppAudioHandler.new,
+    builder: AppAudioHandler.production,
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.vilisten.playback',
       androidNotificationChannelName: 'Đang phát',
+      androidStopForegroundOnPause: false,
       fastForwardInterval: Duration(seconds: 10),
       rewindInterval: Duration(seconds: 10),
     ),
@@ -402,16 +453,20 @@ Future<void> main() async {
   final session = await AudioSession.instance;
   await session.configure(AudioSessionConfiguration.speech());
 
+  final PlaybackGateway gateway = UiPlaybackGatewayAdapter(handler);
+
   runApp(
     BlocProvider(
-      create: (_) => PlayerCubit(handler),
+      create: (_) => PlayerCubit(gateway),
       child: const MyApp(),
     ),
   );
 }
 ~~~
 
-<code>AudioSessionConfiguration.speech()</code> phù hợp nội dung học ngoại ngữ, podcast và spoken audio.
+Đoạn trên mô tả happy path. Composition root thật phải fail-fast ở dev/test; ở production, nếu bootstrap plugin thất bại thì inject <code>UnavailablePlaybackGateway</code>, không tạo engine thứ hai và không giả lập playback.
+
+<code>AudioSessionConfiguration.speech()</code> phù hợp nội dung học ngoại ngữ, podcast và spoken audio. <code>androidStopForegroundOnPause: false</code> là policy đã chốt để Pause không phải restart foreground service từ background trên Android 12+.
 
 Handler phải được khởi tạo đúng một lần trước <code>runApp</code>. Không tạo <code>AudioPlayer</code> trong widget hoặc route.
 
@@ -439,10 +494,13 @@ Khai báo:
 
 Với URL HTTPS thông thường không cần bật cleartext toàn ứng dụng. Nếu sau này dùng header proxy, caching source hoặc HTTP, chỉ mở cleartext cho localhost qua network security config.
 
-Chính sách đề xuất cho giai đoạn đầu:
+Chính sách đã chốt cho Player v1:
 
 - Giữ media session khi pause để resume từ lock screen ổn định.
-- Explicit Stop hoặc hết queue phải kết thúc service và gỡ notification.
+- Chỉ explicit Stop thành công mới clear session và gỡ notification/Now Playing.
+- Hết queue với repeat off giữ metadata/card ở <code>completed × playing=false</code> để hỗ trợ Replay; không tự chuyển thành Stop.
+- Swipe app khỏi recent tasks không được quy đổi ngầm thành Stop; hành vi theo lifecycle của <code>audio_service</code> và phải được kiểm thử.
+- Không tự restore queue/playback sau process death trong release này.
 - Kiểm thử riêng Android 12+ về foreground-service restart.
 
 Tài liệu: [audio_service Android setup](https://pub.dev/packages/audio_service#android-setup).
@@ -543,8 +601,9 @@ Kết quả cần đạt:
 | macOS minimize | Tiếp tục phát |
 | macOS đóng cửa sổ cuối | Kết thúc process trong scope hiện tại |
 | Pause | Giữ current item và system controls |
-| Stop | Dừng, clear queue/item và gỡ system controls |
-| Hết queue | Completed hoặc Stop theo policy được chốt |
+| Stop thành công | Dừng, reset baseline, clear queue/item và gỡ system controls |
+| Stop engine lỗi | Giữ active session/snapshot, phát typed failure <code>stopFailed</code> |
+| Hết queue, repeat off | Chuẩn hóa một lần thành <code>completed × playing=false</code>, giữ metadata/card và cho phép Replay |
 
 Không tự pause chỉ vì Flutter nhận <code>AppLifecycleState.paused</code>.
 
@@ -558,6 +617,11 @@ PlayerFailure
 - message
 - isRecoverable
 - itemId?
+
+PlayerCommandFailure
+- code
+- message
+- command
 ~~~
 
 Các nhóm lỗi tối thiểu:
@@ -566,31 +630,35 @@ Các nhóm lỗi tối thiểu:
 - Source không tồn tại.
 - Format không hỗ trợ.
 - Audio output failure.
-- Request load cũ bị request mới thay thế.
+- Command validation failure như <code>emptyQueue</code>, <code>initialIndexOutOfRange</code>, <code>duplicateItemId</code>, <code>unsupportedUriScheme</code>, <code>invalidExtras</code>, <code>noCurrentItem</code>, <code>seekUnavailableUnknownDuration</code>, <code>invalidSpeed</code> và <code>retryUnavailable</code>.
 
 Khi error:
 
 - Không giữ UI ở trạng thái playing giả.
-- Broadcast trạng thái error/stopped phù hợp cho hệ điều hành.
+- Runtime failure của active item giữ active context, chuyển processing state sang error với <code>playing=false</code> và phát OS error code tương ứng; không tự clear media item. Riêng Stop failure tuân PLR-004 và giữ engine-confirmed playing state gần nhất.
+- Initial-load failure không publish metadata/queue pending; replace-load A→B lỗi phải giữ nguyên A.
 - Hiển thị Retry nếu recoverable.
-- Retry phải load lại đúng current item và position theo policy.
+- Retry phải dùng <code>RetryContext</code> bất biến chứa target item/queue/index, resume position và desired-playing intent. Không có context thì trả <code>retryUnavailable</code>.
+- Retry thực hiện: load target với autoplay false → kiểm tra generation mới nhất → clamp/seek resume position → kiểm tra generation mới nhất → commit atomic → chỉ play nếu desired intent vẫn true. Pause trong lúc retry cập nhật desired intent thành false và phải thắng.
+- OS nhận <code>PlaybackState.errorCode/errorMessage</code> theo bảng code canonical trong ADR; UI và log dùng cùng một mã domain.
 
 ### 14.2. Interruption policy
 
 Với spoken audio:
 
-- Cuộc gọi/Siri/audio focus loss: pause.
-- Headphone unplug: pause.
-- Interruption tạm thời kết thúc: chỉ auto-resume nếu trước interruption đang playing và OS cho phép.
-- Không để cả <code>just_audio</code> và code ứng dụng cùng xử lý một interruption hai lần.
+- <code>just_audio</code> là chủ sở hữu duy nhất của interruption/noisy handling; application chỉ quan sát stream để cập nhật snapshot và log.
+- Cuộc gọi/Siri/audio focus loss: engine pause theo policy plugin.
+- Headphone unplug/noisy event: pause và không auto-resume.
+- Interruption tạm thời kết thúc: chỉ engine được auto-resume nếu trước interruption đang playing và OS cho phép.
+- Application/handler không gọi thêm <code>pause()</code>/<code>play()</code> khi quan sát cùng event.
 
 ## 15. Kế hoạch triển khai
 
 ### PR 1 — Core playback
 
 - Thêm dependencies.
-- Tạo <code>PlayerItem</code>, <code>PlaybackSnapshot</code> và <code>PlaybackGateway</code>.
-- Implement <code>AppAudioHandler</code>.
+- Tạo <code>PlayerItem</code>, <code>PlaybackSnapshot</code>, <code>PlayerCommandFailure</code> và <code>PlaybackGateway</code>.
+- Implement <code>PlaybackEngine</code>, <code>JustAudioPlaybackEngine</code>, <code>AppAudioHandler</code>, <code>UiPlaybackCommandTarget</code> và <code>UiPlaybackGatewayAdapter</code>.
 - Map processing state.
 - Implement queue, play, pause, stop và seek.
 - Broadcast media item, queue và playback state.
@@ -610,6 +678,7 @@ Với spoken audio:
 - Shuffle.
 - Completion/replay.
 - Error mapping.
+- First-class retry và retry context.
 - Chuyển <code>PlayerCubit</code> sang snapshot thật.
 - Hủy subscriptions đúng cách.
 
@@ -655,7 +724,8 @@ Với spoken audio:
 - Buffering.
 - Network failure/retry.
 - Queue completion.
-- Stop/clear session.
+- Stop publication barrier, failure retention và idempotence.
+- Race load/replace/retry bằng generation token.
 - Kiểm tra memory và subscription leak.
 
 ### PR 6 — QA thiết bị thật
@@ -676,6 +746,8 @@ Dùng <code>FakePlaybackGateway</code> kiểm tra:
 - Skip ±10 giây clamp đúng.
 - Next/previous theo queue boundary.
 - Speed/repeat/shuffle.
+- Hai lần Toggle nhanh dùng private desired intent nhưng không optimistic emit.
+- Retry delegate đúng một lần và <code>retryUnavailable</code> được surface đúng.
 - Snapshot cập nhật state.
 - Subscription bị hủy khi Cubit close.
 - Cubit không optimistic flip trạng thái engine.
@@ -689,7 +761,9 @@ Kiểm tra:
 - Chọn controls theo queue boundary.
 - PlayerItem sang MediaItem.
 - PlaybackState có đúng position, buffered position, speed và queue index.
-- Error mapping.
+- Effective queue order của domain và OS luôn trùng nhau khi shuffle.
+- Error mapping và bảng OS error code.
+- Load generation, retry target, seek-before-commit và Stop publication epoch.
 
 ### 16.3. Widget tests
 
@@ -705,6 +779,7 @@ Bổ sung:
 - Metadata thay đổi khi next.
 - Completed hiển thị replay.
 - Error hiển thị retry.
+- Seek bị disable khi duration chưa biết hoặc bằng 0.
 - Expanded route không thay đổi playback.
 
 ### 16.4. Integration/manual tests
@@ -722,6 +797,9 @@ Mỗi nền tảng phải kiểm tra:
 9. Track completion.
 10. Stop làm biến mất system card.
 11. Quay lại app, UI vẫn đồng bộ.
+12. Repeat off/one/all tại boundary và khi track tự kết thúc.
+13. Shuffle vẫn hiển thị cùng effective queue order giữa UI và OS.
+14. Retry initial-load, runtime và replace-load failure đúng target/position.
 
 Mobile bổ sung:
 
@@ -730,12 +808,14 @@ Mobile bổ sung:
 - Cắm/rút tai nghe.
 - Bluetooth media buttons.
 - Swipe app khỏi recent tasks theo policy Android.
+- Pause dài trên Android 12+ rồi resume từ system controls mà không cần foreground-service restart lỗi.
 
 ## 17. Tiêu chí nghiệm thu
 
 - Chỉ có một audio stream và một media session.
 - Mini player, expanded player và system controls luôn cùng current item.
-- Play/pause từ system controls phản ánh lên UI trong khoảng 500 ms.
+- Play/pause và metadata/queue thay đổi phản ánh tức thì theo engine event; UI position publish theo cadence 200 ms.
+- OS position-only update không dày hơn 1 giây, nhưng seek/track/error/completion/command vẫn publish ngay.
 - Position UI và system controls không lệch quá 1 giây sau seek.
 - Không có trạng thái playing giả khi engine error.
 - Buffering không làm nút Play/Pause nhấp nháy sai.
@@ -743,6 +823,9 @@ Mobile bổ sung:
 - Android/iOS khóa màn hình 30 phút vẫn phát ổn định.
 - Cuộc gọi và headphone unplug xử lý đúng policy.
 - Stop gỡ notification/Now Playing.
+- Stop lỗi không giả lập idle và event muộn trước Stop không làm sống lại session đã clear.
+- Completed cuối queue luôn là <code>playing=false</code>; Replay luôn seek về 0 trước play.
+- Retry không bao giờ commit nhầm pending target hoặc tự phát lại sau khi người dùng đã Pause.
 - Web không hỗ trợ Media Session vẫn phát bằng UI thông thường.
 - Tất cả unit/widget test pass.
 - <code>flutter analyze</code> không có lỗi.
@@ -751,16 +834,18 @@ Mobile bổ sung:
 
 | Rủi ro | Biện pháp |
 |---|---|
-| Cubit và engine trở thành hai nguồn sự thật | Cubit chỉ nhận snapshot từ handler |
+| Cubit và engine trở thành hai nguồn sự thật | Cubit chỉ nhận snapshot qua Gateway adapter; pending desired intent là private và không publish |
 | UI seek gọi platform quá dày | Local preview, commit ở onChangeEnd |
-| Queue của engine và OS lệch nhau | Chỉ AppAudioHandler được phép thay queue |
-| Remote command không cập nhật UI | Mọi command đi qua cùng handler, UI nghe engine streams |
+| Queue của engine và OS lệch nhau | Handler publish cùng effective queue order cho domain và OS |
+| Remote command không cập nhật UI | UI và OS hội tụ vào cùng handler operation; UI nhận engine state qua adapter |
 | Background resume lỗi Android mới | Test API 31–36, chốt foreground policy rõ ràng |
 | Web autoplay bị chặn | Play đầu tiên luôn từ user gesture |
 | Web Media Session không tương thích | Feature detection và graceful fallback |
 | Artwork không hiện | HTTPS/local cache hợp lệ và test release |
-| Interruption bị xử lý hai lần | Chỉ định một chủ sở hữu audio focus/interruption |
-| Route dispose làm dừng audio | AudioPlayer sống ngoài widget lifecycle |
+| Interruption bị xử lý hai lần | <code>just_audio</code> sở hữu handling; application chỉ quan sát |
+| Event muộn làm sống lại session sau Stop | Publication barrier và epoch chặn mọi event cũ |
+| Retry commit nhầm item | RetryContext bất biến và generation check trước seek/commit |
+| Route dispose làm dừng audio | Handler/engine sống ngoài widget lifecycle |
 
 ## 19. Definition of Done
 
@@ -773,4 +858,7 @@ Một hạng mục player chỉ được xem là hoàn tất khi:
 - Không còn metadata hoặc duration hard-code trong player UI.
 - Không còn timer mô phỏng position.
 - Không còn playback state được emit trực tiếp từ thao tác UI.
+- Không có production class vừa implement <code>PlaybackGateway</code> vừa extend <code>BaseAudioHandler</code>.
+- Có đúng một <code>JustAudioPlaybackEngine</code>/<code>AudioPlayer</code> trong composition root.
+- Các contract PLR-001–009 và PLR-014–016 có test tương ứng theo task ledger.
 - Tài liệu này được cập nhật nếu architecture hoặc policy thay đổi.

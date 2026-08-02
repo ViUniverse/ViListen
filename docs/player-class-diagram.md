@@ -1,9 +1,11 @@
 # Player Architecture — Class Diagram
 
-> Loại tài liệu: Thiết kế hướng đối tượng (OOP)  
-> Trạng thái: Target design, chưa phải hiện trạng đã implement  
-> Phạm vi: Android, iOS, Web và macOS  
-> Stack: <code>just_audio + audio_service + audio_session + flutter_bloc</code>  
+> Loại tài liệu: Thiết kế hướng đối tượng (OOP)<br>
+> Trạng thái: Target design, chưa phải hiện trạng đã implement<br>
+> Phạm vi: Android, iOS, Web và macOS<br>
+> Stack: <code>just_audio + audio_service + audio_session + flutter_bloc</code><br>
+> Cập nhật: 2026-08-02<br>
+> Contract normative: [Player Architecture Decisions](./player-architecture-decisions.md)<br>
 > Tài liệu liên quan: [Kế hoạch triển khai Player](./player-implementation-plan.md)
 
 ## 1. Mục đích tài liệu
@@ -161,6 +163,34 @@ class PlaybackGateway {
   <<application interface>>
 }
 
+class UiPlaybackCommandTarget {
+  <<internal interface>>
+  +Stream~PlaybackSnapshot~ snapshots
+  +loadQueue(items,index,autoplay,source) Future~void~
+  +play(source) Future~void~
+  +pause(source) Future~void~
+  +stop(source) Future~void~
+  +seek(position,source) Future~void~
+  +retry(source) Future~void~
+}
+
+class UiPlaybackGatewayAdapter {
+  -UiPlaybackCommandTarget target
+  +Stream~PlaybackSnapshot~ snapshots
+  +loadQueue(items,index,autoplay) Future~void~
+  +play() Future~void~
+  +pause() Future~void~
+  +stop() Future~void~
+  +seek(position) Future~void~
+  +skipBy(offset) Future~void~
+  +next() Future~void~
+  +previous() Future~void~
+  +setSpeed(speed) Future~void~
+  +setRepeatMode(mode) Future~void~
+  +setShuffleEnabled(enabled) Future~void~
+  +retry() Future~void~
+}
+
 class PlayerState {
   <<application state>>
 }
@@ -179,6 +209,66 @@ class BaseAudioHandler {
 
 class AudioPlayer {
   <<just_audio>>
+}
+
+class PlaybackEngine {
+  <<internal port>>
+  +playerStateStream Stream
+  +positionStream Stream
+  +bufferedPositionStream Stream
+  +durationStream Stream
+  +currentIndexStream Stream
+  +effectiveSequenceStream Stream
+  +speedStream Stream
+  +loopModeStream Stream
+  +shuffleModeEnabledStream Stream
+  +load(sources,index,autoplay) Future
+  +play() Future
+  +pause() Future
+  +stop() Future
+  +seek(position,index) Future
+  +setSpeed(speed) Future
+  +setLoopMode(mode) Future
+  +setShuffleEnabled(enabled) Future
+  +dispose() Future
+}
+
+class JustAudioPlaybackEngine {
+  -AudioPlayer player
+}
+
+class ActivePlaybackContext {
+  <<internal immutable>>
+  +logicalQueue
+  +effectiveQueue
+  +currentIndex
+  +position
+  +desiredPlaying
+}
+
+class PendingLoadContext {
+  <<internal immutable>>
+  +targetQueue
+  +targetIndex
+  +autoplay
+  +generation
+}
+
+class RetryContext {
+  <<internal immutable>>
+  +targetQueue
+  +targetIndex
+  +restorePosition
+  +desiredPlaying
+  +failureGeneration
+  +failureItemId
+}
+
+class CommandSource {
+  <<enumeration>>
+  ui
+  systemRemote
+  interruption
 }
 
 class AudioService {
@@ -206,19 +296,25 @@ PlayerCubit *-- PlayerState : emits
 PlayerState *-- PlaybackSnapshot : wraps
 PlaybackSnapshot o-- PlayerItem : current item and queue
 
-AppAudioHandler ..|> PlaybackGateway : implements
+UiPlaybackGatewayAdapter ..|> PlaybackGateway : implements
+UiPlaybackGatewayAdapter --> UiPlaybackCommandTarget : forwards source=ui
+AppAudioHandler ..|> UiPlaybackCommandTarget : implements
 AppAudioHandler --|> BaseAudioHandler : extends
-AppAudioHandler "1" *-- "1" AudioPlayer : owns
+AppAudioHandler "1" *-- "1" PlaybackEngine : owns port adapter
+JustAudioPlaybackEngine ..|> PlaybackEngine : implements
+JustAudioPlaybackEngine "1" *-- "1" AudioPlayer : owns
 AppAudioHandler ..> PlayerItem : maps
 
 AudioService ..> AppAudioHandler : initializes once
-AudioSession ..> AudioPlayer : configures focus policy
+AudioSession ..> JustAudioPlaybackEngine : configures focus policy
 SystemMediaControls --> BaseAudioHandler : remote commands
 BaseAudioHandler --> SystemMediaControls : metadata and state
 
 PlayerWidgets ..> PlayerCubit : observes and commands
-AudioPlayer --> AppAudioHandler : engine streams
-AppAudioHandler --> PlayerCubit : snapshots
+AudioPlayer --> JustAudioPlaybackEngine : native streams
+PlaybackEngine --> AppAudioHandler : normalized engine streams
+AppAudioHandler --> UiPlaybackGatewayAdapter : snapshots
+UiPlaybackGatewayAdapter --> PlayerCubit : snapshots
 ```
 
 ### 4.1. Ý nghĩa luồng tổng thể
@@ -229,7 +325,9 @@ Luồng UI:
 PlayerWidgets
 → PlayerCubit
 → PlaybackGateway
-→ AppAudioHandler
+→ UiPlaybackGatewayAdapter(source=ui)
+→ UiPlaybackCommandTarget/AppAudioHandler
+→ PlaybackEngine/JustAudioPlaybackEngine
 → AudioPlayer
 ```
 
@@ -239,6 +337,7 @@ Luồng system control:
 Lock screen / Notification / Headset
 → audio_service.BaseAudioHandler callbacks
 → AppAudioHandler
+→ PlaybackEngine/JustAudioPlaybackEngine
 → AudioPlayer
 ```
 
@@ -246,8 +345,10 @@ Luồng state:
 
 ```text
 AudioPlayer streams
+→ JustAudioPlaybackEngine/PlaybackEngine
 → AppAudioHandler
 → PlaybackSnapshot
+→ UiPlaybackGatewayAdapter
 → PlayerCubit
 → PlayerState
 → PlayerWidgets
@@ -294,6 +395,9 @@ class Domain {
 class Infrastructure {
   <<layer>>
   AppAudioHandler
+  UiPlaybackGatewayAdapter
+  PlaybackEngine
+  JustAudioPlaybackEngine
 }
 
 class ExternalPackages {
@@ -318,7 +422,9 @@ Dependency rules:
 2. Presentation không import just_audio hoặc audio_service.
 3. PlayerCubit chỉ biết <code>PlaybackGateway</code>, không biết <code>AudioPlayer</code>.
 4. Infrastructure được phép import package ngoài và map về domain model.
-5. Composition root trong <code>main.dart</code> là nơi biết concrete implementation <code>AppAudioHandler</code>.
+5. Composition root là nơi biết concrete handler, production engine và UI adapter.
+6. <code>AppAudioHandler</code> không implement public <code>PlaybackGateway</code>;
+   adapter giữ dependency direction và command provenance.
 
 ## 6. Domain Layer — Class Diagram
 
@@ -335,7 +441,7 @@ class PlayerItem {
   +String? album
   +Uri? artUri
   +Duration? duration
-  +Map extras
+  +Map~String,Object?~ extras
   +copyWith() PlayerItem
   +operatorEquals(other) bool
   +hashCode int
@@ -348,6 +454,13 @@ class PlayerFailure {
   +bool isRecoverable
   +String? itemId
   +copyWith() PlayerFailure
+}
+
+class PlayerCommandFailure {
+  <<typed command failure>>
+  +String code
+  +String message
+  +String command
 }
 
 class PlaybackProcessingState {
@@ -416,14 +529,22 @@ Attributes:
 | <code>album</code> | String? | Không | Course/series/album |
 | <code>artUri</code> | Uri? | Không | Artwork cho UI và Now Playing |
 | <code>duration</code> | Duration? | Không | Duration dự kiến từ API; engine có thể cập nhật |
-| <code>extras</code> | Map | Không | Transcript ID, lesson ID hoặc dữ liệu mở rộng |
+| <code>extras</code> | Map&lt;String, Object?&gt; | Không | Deep-immutable graph theo PLR-001 |
 
 Methods:
 
 - <code>copyWith()</code>: tạo immutable copy.
 - Value equality: giúp Cubit/selector tránh rebuild không cần thiết.
+- Constructor/copyWith deep-copy và recursively unmodifiable list/map.
+- Allowed values: null, bool, int, finite double, String, Uri, Duration,
+  List&lt;Object?&gt; và Map&lt;String, Object?&gt;; reject cyclic/arbitrary values.
+- <code>audioUri</code>: https/asset trên mọi target; file chỉ native;
+  http/unknown reject.
+- <code>artUri</code>: https trên mọi target; file chỉ native;
+  asset/http/unknown reject.
 
-Không đặt <code>toMediaItem()</code> trong lớp này vì như vậy Domain sẽ phụ thuộc <code>audio_service</code>. Việc mapping thuộc <code>AppAudioHandler</code>.
+Không đặt <code>toMediaItem()</code> trong lớp này vì như vậy Domain sẽ phụ thuộc
+<code>audio_service</code>. Việc mapping thuộc Infrastructure mapper.
 
 ### 6.2. PlaybackSnapshot
 
@@ -441,6 +562,9 @@ Trách nhiệm:
 
 - Chuẩn hóa lỗi package/platform về lỗi domain.
 - Cho UI biết lỗi có retry được hay không.
+
+`PlayerCommandFailure` tách invalid command/programmer input khỏi engine
+`PlayerFailure`. Typed command failure không được ghi vào playback snapshot.
 - Không đưa exception object hoặc stack trace vào persistent state.
 
 Ví dụ code:
@@ -477,6 +601,7 @@ class PlaybackGateway {
   +setSpeed(speed) Future~void~
   +setRepeatMode(mode) Future~void~
   +setShuffleEnabled(enabled) Future~void~
+  +retry() Future~void~
 }
 
 class PlayerState {
@@ -496,6 +621,7 @@ class PlayerState {
 class PlayerCubit {
   -PlaybackGateway gateway
   -StreamSubscription snapshotSubscription
+  -bool? pendingDesiredPlaying
   +PlayerCubit(gateway)
   +open(item, autoplay) Future~void~
   +openQueue(items, initialIndex, autoplay) Future~void~
@@ -542,7 +668,7 @@ PlayerState --> PlayerFailure
 Đây là Dependency Inversion boundary:
 
 - PlayerCubit phụ thuộc interface.
-- AppAudioHandler implement interface.
+- UiPlaybackGatewayAdapter implement interface và forward vào internal handler target.
 - Tests cung cấp FakePlaybackGateway.
 - Presentation không biết implementation được dùng là just_audio.
 
@@ -552,6 +678,9 @@ Contract rules:
 - State chính thức chỉ đi qua <code>snapshots</code>.
 - Command không được yêu cầu Cubit tự đoán kết quả.
 - <code>loadQueue</code> là entry point duy nhất thay queue.
+- <code>retry()</code> là first-class atomic command; Cubit không ghép load/seek/play.
+- Invalid command hoàn tất bằng typed <code>PlayerCommandFailure</code> và không
+  tạo playback snapshot giả.
 
 ### 7.2. PlayerState
 
@@ -579,6 +708,8 @@ Trách nhiệm:
 - Subscribe snapshot.
 - Emit immutable PlayerState.
 - Hủy subscription khi close.
+- Giữ private pending desired playing chỉ để route rapid Toggle; không expose
+  thành PlayerState và clear/reconcile khi có confirmed snapshot/failure.
 
 Không thuộc trách nhiệm:
 
@@ -597,6 +728,49 @@ direction LR
 
 class PlaybackGateway {
   <<application interface>>
+}
+
+class UiPlaybackCommandTarget {
+  <<internal interface>>
+}
+
+class UiPlaybackGatewayAdapter {
+  <<infrastructure adapter>>
+  -UiPlaybackCommandTarget target
+  +Stream~PlaybackSnapshot~ snapshots
+  +retry() Future~void~
+}
+
+class PlaybackEngine {
+  <<internal port>>
+  +engine streams
+  +load/play/pause/stop/seek
+  +set speed/loop/shuffle
+  +dispose()
+}
+
+class JustAudioPlaybackEngine {
+  <<production adapter>>
+  -AudioPlayer player
+}
+
+class ActivePlaybackContext {
+  <<internal immutable>>
+}
+
+class PendingLoadContext {
+  <<internal immutable>>
+}
+
+class RetryContext {
+  <<internal immutable>>
+}
+
+class CommandSource {
+  <<enumeration>>
+  ui
+  systemRemote
+  interruption
 }
 
 class BaseAudioHandler {
@@ -645,24 +819,30 @@ class AudioPlayer {
 }
 
 class AppAudioHandler {
-  -AudioPlayer player
+  -PlaybackEngine engine
   -List~StreamSubscription~ subscriptions
   -PlaybackSnapshot latestSnapshot
   -int loadGeneration
+  -int sourceEpoch
+  -ActivePlaybackContext? active
+  -PendingLoadContext? pending
+  -RetryContext? retryContext
+  -bool publicationBarrier
   +Stream~PlaybackSnapshot~ snapshots
-  +loadQueue(items, initialIndex, autoplay) Future~void~
-  +play() Future~void~
-  +pause() Future~void~
-  +stop() Future~void~
-  +seek(position) Future~void~
-  +skipBy(offset) Future~void~
-  +next() Future~void~
-  +previous() Future~void~
+  +loadQueue(items, initialIndex, autoplay, source) Future~void~
+  +play(source) Future~void~
+  +pause(source) Future~void~
+  +stop(source) Future~void~
+  +seek(position, source) Future~void~
+  +skipBy(offset, source) Future~void~
+  +next(source) Future~void~
+  +previous(source) Future~void~
+  +retry(source) Future~void~
   +skipToNext() Future~void~
   +skipToPrevious() Future~void~
-  +setSpeed(speed) Future~void~
-  +setRepeatMode(mode) Future~void~
-  +setShuffleEnabled(enabled) Future~void~
+  +setSpeed(speed, source) Future~void~
+  +setRepeatMode(mode, source) Future~void~
+  +setShuffleEnabled(enabled, source) Future~void~
   +dispose() Future~void~
   -bindPlayerStreams() void
   -emitSnapshot() void
@@ -694,18 +874,28 @@ class AudioSource {
   <<just_audio>>
 }
 
+UiPlaybackGatewayAdapter ..|> PlaybackGateway
+UiPlaybackGatewayAdapter --> UiPlaybackCommandTarget
 AppAudioHandler --|> BaseAudioHandler
-AppAudioHandler ..|> PlaybackGateway
+AppAudioHandler ..|> UiPlaybackCommandTarget
 AppAudioHandler ..|> QueueHandler : mixin
 AppAudioHandler ..|> SeekHandler : mixin
-AppAudioHandler "1" *-- "1" AudioPlayer : owns lifecycle
+AppAudioHandler "1" *-- "1" PlaybackEngine : owns adapter lifecycle
+JustAudioPlaybackEngine ..|> PlaybackEngine
+JustAudioPlaybackEngine "1" *-- "1" AudioPlayer : owns lifecycle
 AppAudioHandler "1" *-- "0..*" StreamSubscription : owns
+AppAudioHandler --> ActivePlaybackContext
+AppAudioHandler --> PendingLoadContext
+AppAudioHandler --> RetryContext
+UiPlaybackGatewayAdapter ..> CommandSource : ui
+BaseAudioHandler ..> CommandSource : systemRemote
 AppAudioHandler --> PlaybackSnapshot : emits
 AppAudioHandler ..> PlayerItem : input
 AppAudioHandler ..> MediaItem : maps to OS metadata
 AppAudioHandler ..> AudioSource : maps to engine source
 AppAudioHandler ..> PlayerFailure : normalizes errors
-AudioPlayer --> AppAudioHandler : stream events
+AudioPlayer --> JustAudioPlaybackEngine : plugin events
+PlaybackEngine --> AppAudioHandler : normalized stream events
 ```
 
 ### 8.1. Composition với AudioPlayer
@@ -713,21 +903,23 @@ AudioPlayer --> AppAudioHandler : stream events
 Quan hệ:
 
 ```text
-AppAudioHandler "1" *-- "1" AudioPlayer
+AppAudioHandler "1" *-- "1" PlaybackEngine
+JustAudioPlaybackEngine "1" *-- "1" AudioPlayer
 ```
 
 Đây là composition vì:
 
-- Handler tạo AudioPlayer.
-- Handler là object duy nhất có quyền điều khiển AudioPlayer.
-- Handler dispose thì AudioPlayer phải dispose.
+- Handler production factory tạo đúng một `JustAudioPlaybackEngine` qua port.
+- Production engine adapter là object duy nhất tạo/điều khiển AudioPlayer.
+- Handler dispose engine adapter; adapter dispose AudioPlayer đúng một lần.
 - Widget/Cubit không được giữ reference tới AudioPlayer.
 
 ### 8.2. Hai interface command hội tụ
 
 <code>AppAudioHandler</code> nhận hai loại command:
 
-1. Application commands qua <code>PlaybackGateway</code>.
+1. Application commands qua
+   <code>PlaybackGateway → UiPlaybackGatewayAdapter → UiPlaybackCommandTarget</code>.
 2. System commands qua các override của <code>BaseAudioHandler</code>.
 
 Cả hai phải hội tụ vào cùng private operation:
@@ -735,14 +927,14 @@ Cả hai phải hội tụ vào cùng private operation:
 ```text
 PlayerCubit.next()
 → PlaybackGateway.next()
-→ AppAudioHandler.next()
-→ AppAudioHandler.skipToNext()
-→ AudioPlayer.seek(nextIndex)
+→ UiPlaybackGatewayAdapter(source=ui)
+→ AppAudioHandler internal next operation
+→ PlaybackEngine.seek(nextIndex)
 
 Lock screen next
 → BaseAudioHandler.skipToNext()
-→ AppAudioHandler.skipToNext()
-→ AudioPlayer.seek(nextIndex)
+→ AppAudioHandler internal next operation(source=systemRemote)
+→ PlaybackEngine.seek(nextIndex)
 ```
 
 Không được copy hai implementation điều hướng queue khác nhau.
@@ -764,13 +956,14 @@ PlayerItem
       └─ Uri(audioUri)
 ```
 
-<code>AppAudioHandler</code> là nơi duy nhất thực hiện hai mapping này, bảo đảm UI và OS không dùng metadata khác nhau.
+Infrastructure mappers được handler dùng là nơi duy nhất thực hiện hai mapping
+này, bảo đảm UI và OS không dùng metadata khác nhau.
 
 ### 8.4. Playback state broadcasting
 
 Engine streams được gom thành hai output:
 
-1. <code>PlaybackSnapshot</code> cho Cubit.
+1. <code>PlaybackSnapshot</code> qua UI Gateway adapter cho Cubit.
 2. <code>audio_service.PlaybackState</code> cho OS.
 
 Fields cần broadcast cho OS:
@@ -788,6 +981,10 @@ Fields cần broadcast cho OS:
 
 Không broadcast metadata lại trên mỗi position tick. Metadata chỉ thay khi current item hoặc metadata thật thay đổi.
 
+- UI position projection có cadence 200 ms.
+- OS position-only resync có cadence 1 giây.
+- Item/play/pause/seek/speed/buffering/completed/error/Stop publish ngay.
+
 ### 8.5. Race protection
 
 <code>loadGeneration</code> bảo vệ trường hợp người dùng chọn nhiều track liên tục:
@@ -799,7 +996,13 @@ load A returns → ignored because 1 != 2
 load B returns → accepted
 ```
 
-Chỉ request mới nhất được publish current item/queue.
+Chỉ request mới nhất được publish current item/queue. Handler giữ riêng:
+
+- `ActivePlaybackContext`: state đã commit và được phép publish.
+- `PendingLoadContext`: target đang load, chưa được masquerade thành active.
+- `RetryContext`: exact failed target/index/restore position/desired intent.
+- `sourceEpoch` + publication barrier: chặn Stop/retry/load event cũ tạo outward
+  tuple không nhất quán.
 
 ## 9. Bootstrap và External Services
 
@@ -836,6 +1039,14 @@ class PlayerCubit {
   <<app-wide Cubit>>
 }
 
+class UiPlaybackGatewayAdapter {
+  <<infrastructure adapter>>
+}
+
+class UnavailablePlaybackGateway {
+  <<production degraded gateway; no engine>>
+}
+
 class BlocProvider {
   <<flutter_bloc>>
 }
@@ -848,7 +1059,12 @@ MainCompositionRoot ..> AudioService : initializes
 MainCompositionRoot ..> AudioSession : configures
 MainCompositionRoot ..> AudioSessionConfiguration : speech policy
 AudioService ..> AppAudioHandler : builder creates
-MainCompositionRoot ..> PlayerCubit : injects handler
+MainCompositionRoot ..> UiPlaybackGatewayAdapter : wraps handler
+UiPlaybackGatewayAdapter ..|> PlaybackGateway
+UiPlaybackGatewayAdapter ..> AppAudioHandler : internal target
+MainCompositionRoot ..> UnavailablePlaybackGateway : only on production bootstrap failure
+UnavailablePlaybackGateway ..|> PlaybackGateway
+MainCompositionRoot ..> PlayerCubit : injects PlaybackGateway
 MainCompositionRoot ..> BlocProvider : provides Cubit
 BlocProvider *-- PlayerCubit
 BlocProvider *-- MyApp
@@ -860,7 +1076,8 @@ Bootstrap order:
 WidgetsFlutterBinding.ensureInitialized()
 → AudioService.init(AppAudioHandler)
 → AudioSession.configure(speech)
-→ PlayerCubit(AppAudioHandler as PlaybackGateway)
+→ UiPlaybackGatewayAdapter(AppAudioHandler)
+→ PlayerCubit(PlaybackGateway)
 → BlocProvider
 → runApp(MyApp)
 ```
@@ -870,6 +1087,8 @@ Object cardinality trong một app process:
 | Class | Số lượng |
 |---|---:|
 | AppAudioHandler | 1 |
+| UiPlaybackGatewayAdapter | 1 |
+| JustAudioPlaybackEngine | 1 |
 | AudioPlayer | 1 |
 | PlayerCubit | 1 |
 | AudioSession | 1 shared instance |
@@ -1082,13 +1301,16 @@ Command mapping:
 
 | State | Owner duy nhất | Consumers |
 |---|---|---|
-| Current audio source | AudioPlayer/AppAudioHandler | Cubit, OS |
+| Current audio source | PlaybackEngine confirmed + AppAudioHandler active context | Cubit, OS |
 | Playing | AudioPlayer | Handler, Cubit, OS |
 | Processing state | AudioPlayer | Handler, Cubit, OS |
 | Position | AudioPlayer | Handler, Cubit, seek UI, OS |
 | Buffered position | AudioPlayer | Handler, Cubit, OS |
 | Duration | AudioPlayer/current item | Handler, Cubit, OS |
-| Queue/index | AppAudioHandler + AudioPlayer synchronized | Cubit, OS |
+| Logical queue | AppAudioHandler active context | Shuffle mapper/engine |
+| Effective queue/index | PlaybackEngine confirmed + AppAudioHandler synchronized | Cubit, OS |
+| Pending load target | AppAudioHandler pending context | Retry/failure mapper only |
+| Retry target/intent | AppAudioHandler RetryContext/coordinator | Handler only |
 | Speed | AudioPlayer | Cubit, OS |
 | Repeat/shuffle | AudioPlayer | Cubit, OS |
 | Failure | AppAudioHandler normalized from engine | Cubit, UI |
@@ -1114,13 +1336,17 @@ Lợi ích:
 - Có thể thay engine mà không sửa UI.
 - Không để plugin type tràn sang Presentation.
 
-### 13.2. AppAudioHandler hiện thực PlaybackGateway
+### 13.2. UiPlaybackGatewayAdapter hiện thực PlaybackGateway
 
 ```text
-AppAudioHandler ..|> PlaybackGateway
+UiPlaybackGatewayAdapter ..|> PlaybackGateway
+UiPlaybackGatewayAdapter --> UiPlaybackCommandTarget
+AppAudioHandler ..|> UiPlaybackCommandTarget
 ```
 
-Đây là realization. Infrastructure cam kết cung cấp đầy đủ contract mà Application yêu cầu.
+Adapter là realization của Application contract và gắn `CommandSource.ui`.
+Handler chỉ hiện thực internal target để OS override và UI adapter hội tụ cùng
+operation mà không làm Application phụ thuộc concrete BaseAudioHandler.
 
 ### 13.3. AppAudioHandler kế thừa BaseAudioHandler
 
@@ -1130,13 +1356,16 @@ AppAudioHandler --|> BaseAudioHandler
 
 Đây là inheritance bắt buộc bởi <code>audio_service</code>. Các override trở thành entry point cho lock screen, notification, headset và Control Center.
 
-### 13.4. AppAudioHandler hợp thành AudioPlayer
+### 13.4. Handler hợp thành engine port adapter
 
 ```text
-AppAudioHandler *-- AudioPlayer
+AppAudioHandler *-- PlaybackEngine
+JustAudioPlaybackEngine ..|> PlaybackEngine
+JustAudioPlaybackEngine *-- AudioPlayer
 ```
 
-Composition bảo đảm không widget hoặc Cubit nào tạo player thứ hai.
+Composition bảo đảm production có đúng một AudioPlayer và test inject được fake
+engine không platform channel.
 
 ### 13.5. PlaybackSnapshot kết tập PlayerItem
 
@@ -1162,7 +1391,8 @@ ExpandedPlayerScreenState ..> PlayerCubit
 stateDiagram-v2
 [*] --> Bootstrap
 Bootstrap --> HandlerReady: AudioService.init
-HandlerReady --> CubitReady: PlayerCubit(handler)
+HandlerReady --> GatewayReady: UiPlaybackGatewayAdapter(handler)
+GatewayReady --> CubitReady: PlayerCubit(gateway)
 CubitReady --> Idle: runApp
 
 Idle --> Loaded: loadQueue
@@ -1171,20 +1401,22 @@ Playing --> Paused: pause
 Paused --> Playing: play
 Playing --> Buffering: network wait
 Buffering --> Playing: ready
-Playing --> Completed: end of queue
+Playing --> Completed: final repeat-off + one-shot pause normalization
 Completed --> Playing: replay or next queue
 Playing --> Error: engine failure
 Buffering --> Error: load failure
 Error --> Loaded: retry
 
-Loaded --> Stopped: stop
-Paused --> Stopped: stop
-Playing --> Stopped: stop
-Completed --> Stopped: stop policy
-Stopped --> Idle: clear item and session
+Loaded --> Stopping: stop + barrier/epoch
+Paused --> Stopping: stop + barrier/epoch
+Playing --> Stopping: stop + barrier/epoch
+Completed --> Stopping: stop + barrier/epoch
+Error --> Stopping: stop retry
+Stopping --> Idle: engine stopped + atomic clear/publication
+Stopping --> Error: stopFailed; retain active session
 
 Idle --> Disposed: app process ends
-Stopped --> Disposed: app process ends
+Stopping --> Disposed: process teardown only
 Disposed --> [*]
 ```
 
@@ -1209,6 +1441,10 @@ class AppAudioHandler {
   <<production>>
 }
 
+class UiPlaybackGatewayAdapter {
+  <<production gateway adapter>>
+}
+
 class FakePlaybackGateway {
   <<test double>>
   -PlaybackSnapshot snapshot
@@ -1226,13 +1462,37 @@ class FakePlaybackGateway {
   +setSpeed(speed) Future~void~
   +setRepeatMode(mode) Future~void~
   +setShuffleEnabled(enabled) Future~void~
+  +retry() Future~void~
+}
+
+class PlaybackEngine {
+  <<internal port>>
+}
+
+class FakePlaybackEngine {
+  <<test double>>
+  +controllableLoadCompleter
+  +emitEngineEvent()
+  +List~RecordedCall~ calls
+}
+
+class PlayerClock {
+  <<internal port>>
+}
+
+class FakePlayerClock {
+  <<test double>>
+  +advance(duration)
 }
 
 class PlayerCubit
 class PlayerWidgets
 
-AppAudioHandler ..|> PlaybackGateway
+UiPlaybackGatewayAdapter ..|> PlaybackGateway
 FakePlaybackGateway ..|> PlaybackGateway
+FakePlaybackEngine ..|> PlaybackEngine
+FakePlayerClock ..|> PlayerClock
+AppAudioHandler --> PlaybackEngine
 PlayerCubit --> PlaybackGateway
 PlayerWidgets ..> PlayerCubit
 ```
@@ -1241,10 +1501,12 @@ Test strategy:
 
 - Unit test Cubit với <code>FakePlaybackGateway</code>.
 - Widget test với Cubit + FakePlaybackGateway.
-- Pure tests cho mapper methods tách được khỏi platform.
+- Unit test handler/race/ordering với FakePlaybackEngine, fake clock và recorder.
+- Pure tests cho validators/reducer/mappers/coordinator.
 - Integration test thật cho AppAudioHandler và system controls.
 
-Không mock <code>AudioPlayer</code> xuyên qua toàn bộ app. Nếu handler mapping trở nên quá lớn, chỉ lúc đó mới cân nhắc tách một engine port riêng.
+Không mock <code>AudioPlayer</code> xuyên qua toàn bộ app; engine port là seam đã
+chốt, production adapter mới biết plugin concrete.
 
 ## 16. Anti-patterns cần tránh
 
@@ -1305,11 +1567,20 @@ Navigator sở hữu route. Playback state chỉ mô tả audio.
 |---|---|---|
 | PlayerItem | <code>lib/features/player/domain/player_item.dart</code> | Chưa có |
 | PlaybackSnapshot | <code>lib/features/player/domain/playback_snapshot.dart</code> | Chưa có |
-| PlayerFailure | Có thể đặt cùng <code>playback_snapshot.dart</code> | Chưa có |
+| PlayerFailure | <code>lib/features/player/domain/player_failure.dart</code> | Chưa có |
+| PlayerCommandFailure | <code>lib/features/player/domain/player_command_failure.dart</code> | Chưa có |
 | PlaybackGateway | <code>lib/features/player/application/playback_gateway.dart</code> | Chưa có |
+| PlayerCubit | <code>lib/features/player/application/player_cubit.dart</code> | Chưa có target type |
+| PlayerState | <code>lib/features/player/application/player_state.dart</code> | Chưa có target type |
+| UiPlaybackCommandTarget | <code>lib/features/player/infrastructure/ui_playback_command_target.dart</code> | Chưa có |
+| UiPlaybackGatewayAdapter | <code>lib/features/player/infrastructure/ui_playback_gateway_adapter.dart</code> | Chưa có |
+| CommandSource | <code>lib/features/player/infrastructure/command_source.dart</code> | Chưa có |
+| PlaybackEngine | <code>lib/features/player/infrastructure/engine/playback_engine.dart</code> | Chưa có |
+| JustAudioPlaybackEngine | <code>lib/features/player/infrastructure/engine/just_audio_playback_engine.dart</code> | Chưa có |
+| Active/Pending/Retry contexts | <code>lib/features/player/infrastructure/playback_contexts.dart</code> | Chưa có |
 | AppAudioHandler | <code>lib/features/player/infrastructure/app_audio_handler.dart</code> | Chưa có |
-| PlayerCubit | <code>lib/features/player/presentation/cubit/player_cubit.dart</code> | Cần thay implementation mô phỏng |
-| PlayerState | Cùng file Cubit trong giai đoạn đầu | Cần thay |
+| UnavailablePlaybackGateway | <code>lib/features/player/infrastructure/unavailable_playback_gateway.dart</code> | Chưa có |
+| LegacyPlayerCubit/State | <code>lib/features/player/presentation/cubit/player_cubit.dart</code> | Rename tạm, xóa tại PLR-110 |
 | PlayerHost | <code>lib/features/player/presentation/widgets/player_host.dart</code> | Cần bỏ presentation state |
 | MiniPlayer | <code>lib/features/player/presentation/widgets/mini_player.dart</code> | Cần bỏ hard-code |
 | PlayerControlDock | <code>lib/features/player/presentation/widgets/player_control_dock.dart</code> | Cần dùng Duration thật |
@@ -1320,8 +1591,9 @@ Navigator sở hữu route. Playback state chỉ mô tả audio.
 
 Trước khi chấp nhận implementation:
 
-- [x] Chỉ <code>AppAudioHandler</code> tạo <code>AudioPlayer</code>.
+- [x] Chỉ <code>JustAudioPlaybackEngine</code> tạo <code>AudioPlayer</code>.
 - [x] <code>PlayerCubit</code> chỉ phụ thuộc <code>PlaybackGateway</code>.
+- [x] UiPlaybackGatewayAdapter, không phải Handler, implement PlaybackGateway.
 - [x] Domain không import Flutter hoặc audio packages.
 - [x] UI không import just_audio/audio_service.
 - [x] OS callbacks và UI commands dùng chung handler operations.
@@ -1335,6 +1607,7 @@ Trước khi chấp nhận implementation:
 - [x] Stop clear media session.
 - [x] Route dispose không stop/dispose handler.
 - [x] FakePlaybackGateway dùng được trong unit/widget tests.
+- [x] FakePlaybackEngine/fake clock unit-test được handler ordering/cadence.
 
 ## 19. Kết luận
 
@@ -1347,7 +1620,7 @@ PlayerItem + PlaybackSnapshot
 PlaybackGateway + PlayerCubit
           = application contract và điều phối UI
 
-AppAudioHandler + AudioPlayer + audio_service
+AppAudioHandler + PlaybackEngine + audio_service
           = playback thật và tích hợp hệ điều hành
 ```
 
@@ -1355,9 +1628,11 @@ Quan hệ cốt lõi:
 
 ```text
 PlayerCubit --> PlaybackGateway
-AppAudioHandler ..|> PlaybackGateway
+UiPlaybackGatewayAdapter ..|> PlaybackGateway
+AppAudioHandler ..|> UiPlaybackCommandTarget
 AppAudioHandler --|> BaseAudioHandler
-AppAudioHandler *-- AudioPlayer
+AppAudioHandler *-- PlaybackEngine
+JustAudioPlaybackEngine *-- AudioPlayer
 PlaybackSnapshot o-- PlayerItem
 PlayerWidgets ..> PlayerCubit
 ```
