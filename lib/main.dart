@@ -3,8 +3,9 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:ten_project_cua_ban/features/home/presentation/home_screen.dart';
 import 'package:ten_project_cua_ban/features/player/presentation/cubit/player_cubit.dart';
 
-void main() =>
-    runApp(BlocProvider(create: (_) => PlayerCubit(), child: const MyApp()));
+void main() => runApp(
+  BlocProvider(create: (_) => LegacyPlayerCubit(), child: const MyApp()),
+);
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});

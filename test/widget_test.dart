@@ -5,7 +5,7 @@ import 'package:ten_project_cua_ban/features/player/presentation/cubit/player_cu
 import 'package:ten_project_cua_ban/main.dart';
 
 Widget buildSubject() =>
-    BlocProvider(create: (_) => PlayerCubit(), child: const MyApp());
+    BlocProvider(create: (_) => LegacyPlayerCubit(), child: const MyApp());
 
 void main() {
   testWidgets('mini player controls shared playback state', (tester) async {

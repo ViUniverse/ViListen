@@ -8,26 +8,27 @@ class PlayerHost extends StatelessWidget {
   const PlayerHost({super.key});
 
   Future<void> _openExpandedPlayer(BuildContext context) async {
-    final cubit = context.read<PlayerCubit>();
+    final cubit = context.read<LegacyPlayerCubit>();
     cubit.expand();
     await Navigator.of(context).push<void>(ExpandedPlayerRoute());
     cubit.minimize();
   }
 
   @override
-  Widget build(BuildContext context) => BlocBuilder<PlayerCubit, PlayerState>(
-    buildWhen: (previous, current) =>
-        previous.presentation != current.presentation,
-    builder: (context, state) {
-      if (state.presentation == PlayerPresentation.hidden) {
-        return const SizedBox.shrink();
-      }
-      return Positioned(
-        left: 12,
-        right: 12,
-        bottom: 12,
-        child: MiniPlayer(onOpen: () => _openExpandedPlayer(context)),
+  Widget build(BuildContext context) =>
+      BlocBuilder<LegacyPlayerCubit, LegacyPlayerState>(
+        buildWhen: (previous, current) =>
+            previous.presentation != current.presentation,
+        builder: (context, state) {
+          if (state.presentation == LegacyPlayerPresentation.hidden) {
+            return const SizedBox.shrink();
+          }
+          return Positioned(
+            left: 12,
+            right: 12,
+            bottom: 12,
+            child: MiniPlayer(onOpen: () => _openExpandedPlayer(context)),
+          );
+        },
       );
-    },
-  );
 }

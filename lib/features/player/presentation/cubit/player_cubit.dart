@@ -1,9 +1,11 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-enum PlayerPresentation { hidden, mini, expanded }
+// Migration-only legacy player types. Remove with PLR-110 after all player
+// consumers migrate to the application layer.
+enum LegacyPlayerPresentation { hidden, mini, expanded }
 
-class PlayerState {
-  const PlayerState({
+class LegacyPlayerState {
+  const LegacyPlayerState({
     required this.presentation,
     required this.progress,
     required this.isPlaying,
@@ -12,19 +14,19 @@ class PlayerState {
 
   static const speeds = ['1.0x', '1.25x', '1.5x', '2.0x'];
 
-  final PlayerPresentation presentation;
+  final LegacyPlayerPresentation presentation;
   final double progress;
   final bool isPlaying;
   final int speedIndex;
 
   String get speed => speeds[speedIndex];
 
-  PlayerState copyWith({
-    PlayerPresentation? presentation,
+  LegacyPlayerState copyWith({
+    LegacyPlayerPresentation? presentation,
     double? progress,
     bool? isPlaying,
     int? speedIndex,
-  }) => PlayerState(
+  }) => LegacyPlayerState(
     presentation: presentation ?? this.presentation,
     progress: progress ?? this.progress,
     isPlaying: isPlaying ?? this.isPlaying,
@@ -32,11 +34,11 @@ class PlayerState {
   );
 }
 
-class PlayerCubit extends Cubit<PlayerState> {
-  PlayerCubit()
+class LegacyPlayerCubit extends Cubit<LegacyPlayerState> {
+  LegacyPlayerCubit()
     : super(
-        const PlayerState(
-          presentation: PlayerPresentation.mini,
+        const LegacyPlayerState(
+          presentation: LegacyPlayerPresentation.mini,
           progress: .45,
           isPlaying: true,
           speedIndex: 0,
@@ -44,12 +46,13 @@ class PlayerCubit extends Cubit<PlayerState> {
       );
 
   void expand() =>
-      emit(state.copyWith(presentation: PlayerPresentation.expanded));
+      emit(state.copyWith(presentation: LegacyPlayerPresentation.expanded));
 
   void minimize() =>
-      emit(state.copyWith(presentation: PlayerPresentation.mini));
+      emit(state.copyWith(presentation: LegacyPlayerPresentation.mini));
 
-  void hide() => emit(state.copyWith(presentation: PlayerPresentation.hidden));
+  void hide() =>
+      emit(state.copyWith(presentation: LegacyPlayerPresentation.hidden));
 
   void togglePlayback() => emit(state.copyWith(isPlaying: !state.isPlaying));
 
@@ -60,7 +63,7 @@ class PlayerCubit extends Cubit<PlayerState> {
 
   void cycleSpeed() => emit(
     state.copyWith(
-      speedIndex: (state.speedIndex + 1) % PlayerState.speeds.length,
+      speedIndex: (state.speedIndex + 1) % LegacyPlayerState.speeds.length,
     ),
   );
 }
