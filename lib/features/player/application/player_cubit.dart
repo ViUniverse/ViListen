@@ -41,6 +41,15 @@ final class PlayerCubit extends Cubit<PlayerState> {
 
   Future<void> previous() => _gateway.previous();
 
+  Future<void> setSpeed(double speed) => _gateway.setSpeed(speed);
+
+  Future<void> cycleRepeatMode() => _gateway.setRepeatMode(
+    PlayerCommandPolicies.nextRepeatMode(state.playback.repeatMode),
+  );
+
+  Future<void> toggleShuffle() =>
+      _gateway.setShuffleEnabled(!state.playback.shuffleEnabled);
+
   Future<void> togglePlayback() async {
     final desiredPlaying = !(_pendingDesiredPlaying ?? state.playing);
     final intentGeneration = ++_nextIntentGeneration;
