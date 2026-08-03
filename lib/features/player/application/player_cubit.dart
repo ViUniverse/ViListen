@@ -37,6 +37,10 @@ final class PlayerCubit extends Cubit<PlayerState> {
   Future<void> skipForward() =>
       _gateway.skipBy(PlayerCommandPolicies.skipInterval);
 
+  Future<void> next() => _gateway.next();
+
+  Future<void> previous() => _gateway.previous();
+
   Future<void> togglePlayback() async {
     final desiredPlaying = !(_pendingDesiredPlaying ?? state.playing);
     final intentGeneration = ++_nextIntentGeneration;
