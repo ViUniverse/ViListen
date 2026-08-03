@@ -15,6 +15,33 @@ final class PlayerCubit extends Cubit<PlayerState> {
 
   final PlaybackGateway _gateway;
   late final StreamSubscription<PlaybackSnapshot> _snapshotSubscription;
+  bool? _pendingDesiredPlaying;
+  int? _pendingIntentGeneration;
+  int _nextIntentGeneration = 0;
+
+  Future<void> play() => _gateway.play();
+
+  Future<void> pause() => _gateway.pause();
+
+  Future<void> togglePlayback() async {
+    final desiredPlaying = !(_pendingDesiredPlaying ?? state.playing);
+    final intentGeneration = ++_nextIntentGeneration;
+    _pendingDesiredPlaying = desiredPlaying;
+    _pendingIntentGeneration = intentGeneration;
+
+    try {
+      if (desiredPlaying) {
+        await _gateway.play();
+      } else {
+        await _gateway.pause();
+      }
+    } catch (error, stackTrace) {
+      if (_pendingIntentGeneration == intentGeneration) {
+        _reconcilePendingIntent();
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+  }
 
   Future<void> open(PlayerItem item, {bool autoplay = true}) =>
       openQueue(<PlayerItem>[item], autoplay: autoplay);
@@ -27,10 +54,22 @@ final class PlayerCubit extends Cubit<PlayerState> {
       _gateway.loadQueue(items, initialIndex: initialIndex, autoplay: autoplay);
 
   void _emitSnapshot(PlaybackSnapshot snapshot) {
+    final pendingDesiredPlaying = _pendingDesiredPlaying;
+    final confirmsPendingIntent =
+        pendingDesiredPlaying != null &&
+        (snapshot.playing == pendingDesiredPlaying || snapshot.failure != null);
+    if (confirmsPendingIntent) {
+      _reconcilePendingIntent();
+    }
     final nextState = PlayerState.fromSnapshot(snapshot);
     if (nextState != state) {
       emit(nextState);
     }
+  }
+
+  void _reconcilePendingIntent() {
+    _pendingDesiredPlaying = null;
+    _pendingIntentGeneration = null;
   }
 
   @override
