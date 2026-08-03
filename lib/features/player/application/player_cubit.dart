@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:ten_project_cua_ban/features/player/application/playback_gateway.dart';
+import 'package:ten_project_cua_ban/features/player/application/player_command_policies.dart';
 import 'package:ten_project_cua_ban/features/player/application/player_state.dart';
 import 'package:ten_project_cua_ban/features/player/domain/playback_snapshot.dart';
 import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
@@ -22,6 +23,19 @@ final class PlayerCubit extends Cubit<PlayerState> {
   Future<void> play() => _gateway.play();
 
   Future<void> pause() => _gateway.pause();
+
+  Future<void> stop() async {
+    _reconcilePendingIntent();
+    await _gateway.stop();
+  }
+
+  Future<void> seekTo(Duration position) => _gateway.seek(position);
+
+  Future<void> skipBackward() =>
+      _gateway.skipBy(-PlayerCommandPolicies.skipInterval);
+
+  Future<void> skipForward() =>
+      _gateway.skipBy(PlayerCommandPolicies.skipInterval);
 
   Future<void> togglePlayback() async {
     final desiredPlaying = !(_pendingDesiredPlaying ?? state.playing);
