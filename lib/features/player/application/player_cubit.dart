@@ -16,6 +16,7 @@ final class PlayerCubit extends Cubit<PlayerState> {
 
   final PlaybackGateway _gateway;
   late final StreamSubscription<PlaybackSnapshot> _snapshotSubscription;
+  Future<void>? _closeFuture;
   bool? _pendingDesiredPlaying;
   int? _pendingIntentGeneration;
   int _nextIntentGeneration = 0;
@@ -102,8 +103,16 @@ final class PlayerCubit extends Cubit<PlayerState> {
   }
 
   @override
-  Future<void> close() async {
-    await _snapshotSubscription.cancel();
-    await super.close();
+  Future<void> close() {
+    final closeFuture = _closeFuture;
+    if (closeFuture != null) {
+      return closeFuture;
+    }
+
+    final future = _snapshotSubscription.cancel().then<void>(
+      (_) => super.close(),
+    );
+    _closeFuture = future;
+    return future;
   }
 }

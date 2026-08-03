@@ -57,7 +57,10 @@ final class FakePlaybackGateway implements PlaybackGateway {
           },
           onDone: subscriber.close,
         );
-        subscriber.onCancel = sourceSubscription.cancel;
+        subscriber.onCancel = () {
+          snapshotSubscriptionCancelCount += 1;
+          return sourceSubscription.cancel();
+        };
 
         scheduleMicrotask(() {
           if (!_disposed && !subscriber.isClosed) {
@@ -68,6 +71,8 @@ final class FakePlaybackGateway implements PlaybackGateway {
 
   List<RecordedCommand> get commands =>
       List<RecordedCommand>.unmodifiable(_commands);
+
+  int snapshotSubscriptionCancelCount = 0;
 
   int callCountFor(String commandName) => _callCounts[commandName] ?? 0;
 
