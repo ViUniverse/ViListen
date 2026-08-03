@@ -24,6 +24,8 @@ final class PlayerCubit extends Cubit<PlayerState> {
 
   Future<void> pause() => _gateway.pause();
 
+  Future<void> retry() => _gateway.retry();
+
   Future<void> stop() async {
     _reconcilePendingIntent();
     await _gateway.stop();
