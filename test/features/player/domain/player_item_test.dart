@@ -146,7 +146,23 @@ void main() {
         throwsA(isA<ArgumentError>()),
       );
       expect(
+        () => _item(extras: <String, Object?>{'value': <Object?>{}}),
+        throwsA(isA<ArgumentError>()),
+      );
+      final invalidMap = <Object?, Object?>{1: 'non-string key'};
+      final extras = <String, Object?>{'nested': invalidMap};
+      expect(() => _item(extras: extras), throwsA(isA<ArgumentError>()));
+      expect(
+        () => _item(extras: <String, Object?>{'value': double.nan}),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(
         () => _item(extras: <String, Object?>{'value': double.infinity}),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(
+        () =>
+            _item(extras: <String, Object?>{'value': double.negativeInfinity}),
         throwsA(isA<ArgumentError>()),
       );
       expect(
@@ -156,6 +172,27 @@ void main() {
           },
         ),
         returnsNormally,
+      );
+    });
+
+    test('rejects a direct cyclic list in extras', () {
+      final cycle = <Object?>[];
+      cycle.add(cycle);
+
+      expect(
+        () => _item(extras: <String, Object?>{'cycle': cycle}),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('rejects a nested cyclic map in extras', () {
+      final root = <String, Object?>{};
+      final child = <String, Object?>{'root': root};
+      root['child'] = child;
+
+      expect(
+        () => _item(extras: <String, Object?>{'nested': root}),
+        throwsA(isA<ArgumentError>()),
       );
     });
 

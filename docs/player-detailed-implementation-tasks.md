@@ -892,16 +892,19 @@ flutter analyze
 - Thực hiện:
   - Chỉ giữ policy hạ tầng: URI/source validation và cadence publication.
   - Validate queue, initial index, duplicate ID và URI theo contract.
-  - Validate/deep-copy `extras` đúng recursive grammar PLR-001; reject cycle,
-    custom object, Set, non-String key và non-finite double.
-  - Dùng command constants từ Application; không định nghĩa lại 10/3 giây.
+  - Dùng invariant của `PlayerItem` cho deep-copy/immutability của `extras`;
+    queue boundary không nhận raw extras và không phát sinh `invalidExtras`.
+  - Dùng command constants từ Application khi policy downstream cần chúng;
+    không định nghĩa lại 10/3 giây.
 - Test:
   - Empty queue.
   - Index âm/quá range.
   - Duplicate ID.
-  - Extras hợp lệ/lồng nhau và từng nhóm extras bị từ chối.
+  - Queue trả về là defensive immutable copy và giữ thứ tự.
   - URI matrix `https`/asset/file theo web/native; `http`/scheme khác bị từ chối.
   - Valid single/multi-item queue.
+  - Các nhóm extras bị từ chối được kiểm tra tại
+    `test/features/player/domain/player_item_test.dart` theo PLR-001.
 
 ### PLR-051 — Tạo seek/skip/previous policy pure `[CODE]` `[UNIT]`
 

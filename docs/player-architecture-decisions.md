@@ -66,9 +66,9 @@ của plugin hoặc platform.
 | Previous threshold | `const Duration(seconds: 3)` | Application policy | `application/player_command_policies.dart` |
 | Previous boundary | `position > 3s` restart current; `position <= 3s` điều hướng previous theo PLR-014 | Position policy | `infrastructure/playback_position_policy.dart` |
 | UI speed presets | `0.5`, `0.75`, `1.0`, `1.25`, `1.5`, `1.75`, `2.0` | Application policy | `application/player_command_policies.dart` |
-| Gateway speed range | Mọi `double` hữu hạn trong miền đóng `[0.5, 2.0]`; UI preset không giới hạn caller khác | Speed validator | `infrastructure/player_policies.dart` |
-| Invalid speed | Reject `NaN`, infinity, `< 0.5` hoặc `> 2.0` bằng `invalidSpeed`; không gọi engine | Speed validator | `infrastructure/player_policies.dart` |
-| Invalid programmer input | Future hoàn tất bằng typed `PlayerCommandFailure`; không tạo `PlayerFailure` và không mutate snapshot | Command boundary | `domain/player_command_failure.dart` |
+| Gateway speed range | Mọi `double` hữu hạn trong miền đóng `[0.5, 2.0]`; UI preset không giới hạn caller khác | Application speed policy | `application/player_command_policies.dart` |
+| Invalid speed | Reject `NaN`, infinity, `< 0.5` hoặc `> 2.0` bằng `invalidSpeed`; không gọi engine | Infrastructure command handler | `infrastructure/app_audio_handler.dart` |
+| Invalid programmer input | Queue/URI input hoàn tất bằng typed `PlayerCommandFailure`; extras lỗi bị reject khi tạo `PlayerItem`; không tạo `PlayerFailure` và không mutate snapshot | Command/domain boundary | `domain/player_command_failure.dart` |
 | Valid source load failure | Normalize thành `PlayerFailure` | Failure mapper | `infrastructure/player_failure_mapper.dart` |
 
 `PlayerCommandFailure.code` tối thiểu gồm:
@@ -78,7 +78,7 @@ emptyQueue
 initialIndexOutOfRange
 duplicateItemId
 unsupportedUriScheme
-invalidExtras
+invalidExtras  # raw-input boundary only; not loadQueue(List<PlayerItem>)
 seekUnavailableUnknownDuration
 invalidSpeed
 noCurrentItem
@@ -103,12 +103,16 @@ Map<String, Object?>
 ```
 
 - Reject `Set`, custom object, map key không phải `String`, non-finite `double`
-  và cyclic list/map bằng `invalidExtras`.
+  và cyclic list/map tại `PlayerItem` construction boundary.
 - Constructor và `copyWith` deep-copy toàn bộ list/map, sau đó wrap recursively
   thành collection không thể mutate.
 - Getter chỉ expose immutable graph đã copy; không có nhánh "copy nếu cần".
 - List equality phụ thuộc thứ tự; map equality không phụ thuộc thứ tự insert.
 - Hash code phải tuân cùng deep-equality policy.
+- `PlaybackGateway.loadQueue()` nhận `List<PlayerItem>` đã được khởi tạo, nên
+  extras lỗi không thể phát sinh tại queue boundary dưới contract hiện tại.
+  `invalidExtras` vẫn là mã reserved cho một raw-input boundary trong tương lai;
+  không dùng nó làm oracle cho `loadQueue(List<PlayerItem>)`.
 
 #### Source URI matrix
 
@@ -154,7 +158,8 @@ Map<String, Object?>
   seek vẫn bị reject.
 - Boundary đúng tại `3s`, `10s`, `0.5x`, `2.0x`, `NaN` và infinity.
 - Mutate input extras sau constructor không đổi item; mọi collection expose ra
-  không mutate được; nested equality/hash nhất quán.
+  không mutate được; nested equality/hash nhất quán; domain test bao phủ Set,
+  non-string key, direct/nested cycle, NaN và cả hai infinity.
 - Mỗi URI scheme/platform đi đúng nhánh matrix trước khi mapper gọi engine.
 
 ---
