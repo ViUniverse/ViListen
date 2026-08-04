@@ -244,6 +244,8 @@ end
 Behavior contract:
 
 - Loading state xuất hiện trước khi engine ready.
+- Engine load là prepare-only; handler chỉ gọi Play sau khi queue/item đã commit và
+  Ready đã được publish.
 - Queue OS và engine được tạo từ cùng một danh sách <code>PlayerItem</code>.
 - Pending item/queue không được publish trước latest-ready commit.
 - Current metadata đã commit được publish trước playback bắt đầu.

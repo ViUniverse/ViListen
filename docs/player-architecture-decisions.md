@@ -1,7 +1,7 @@
 # Player Architecture Decisions
 
 > Trạng thái: Normative contract ledger cho Player v1<br>
-> Cập nhật gần nhất: 2026-08-02<br>
+> Cập nhật gần nhất: 2026-08-04<br>
 > Owner: Player team
 
 ## 1. Quy tắc sử dụng tài liệu
@@ -29,7 +29,7 @@
 | PLR-003 | Accepted | 1 | Atomic Retry và retry context |
 | PLR-004 | Accepted | 1 | Canonical Stop transaction |
 | PLR-005 | Accepted | 1 | Interruption và becoming-noisy |
-| PLR-006 | Accepted | 1 | Handler test seam và adapter boundary |
+| PLR-006 | Accepted | 2 | Handler test seam và adapter boundary |
 | PLR-007 | Accepted | 1 | Bootstrap, OS error và Android service |
 | PLR-008 | Accepted | 1 | Command-validity và rapid intent |
 | PLR-009 | Accepted | 1 | Active/pending load và replace failure |
@@ -439,7 +439,9 @@ Play, một OS event có thể tạo hai command và auto-resume trái user inte
 ## PLR-006 / 2026-08-02 / Owner: Player team
 
 **Status:** Accepted<br>
-**Decision version:** 1
+**Decision version:** 2<br>
+**Revision date:** 2026-08-04<br>
+**Revision reason:** Khóa engine/clock test seam và prepare-only load contract trước PLR-048.
 
 ### Context
 
@@ -458,6 +460,16 @@ plugin. Đồng thời Application không được phụ thuộc concrete BaseAu
 - OS overrides gọi cùng internal operation với `CommandSource.systemRemote` mà
   không đi qua Cubit hoặc UI adapter.
 - Internal `PlaybackEngine` port chỉ expose streams/commands handler thực sự cần.
+- Contract engine/clock được khóa tại PLR-048:
+  - `load(sources, initialIndex)` chỉ chuẩn bị nguồn và chờ load hoàn tất; không
+    autoplay. Handler giữ autoplay trong pending context và chỉ gọi `play()` sau
+    commit/publication theo PLR-063.
+  - `effectiveSequenceStream` phát `List<int>` theo logical index; `errorStream`
+    phát lỗi engine để failure mapper xử lý ở Infrastructure.
+  - `PlayerClock` chỉ expose `ticks`, `elapsed` và `dispose`; fake clock advance
+    đồng bộ, không dùng wall clock.
+  - Recorder engine call có thể không có provenance; `source` nullable ở engine
+    boundary và bắt buộc khi ghi nhận operation của handler.
 - `JustAudioPlaybackEngine` là production adapter duy nhất tạo và sở hữu đúng một
   `just_audio.AudioPlayer`.
 - `AppAudioHandler.production()` tạo đúng một production engine adapter; test

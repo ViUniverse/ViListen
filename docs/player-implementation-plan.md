@@ -270,6 +270,8 @@ final class UiPlaybackGatewayAdapter implements PlaybackGateway {
 ### 7.1. Trách nhiệm
 
 - Sở hữu <code>PlaybackEngine</code>; production adapter của engine sở hữu duy nhất một <code>AudioPlayer</code>.
+- Engine load chỉ prepare nguồn; handler commit/publication xong mới thực hiện
+  autoplay bằng lệnh <code>play()</code> riêng.
 - Chuyển <code>PlayerItem</code> thành <code>MediaItem</code> và <code>AudioSource</code>.
 - Giữ effective queue order của engine, domain và <code>audio_service</code> đồng bộ.
 - Map stream engine sang <code>PlaybackSnapshot</code>.

@@ -858,6 +858,8 @@ flutter analyze
   - `test/features/player/support/playback_test_seams_test.dart`
 - Thực hiện:
   - Port chỉ expose streams/commands thực sự handler cần.
+  - `load` chỉ prepare source với `initialIndex`; autoplay được handler thực hiện
+    sau commit/publication để giữ đúng ordering của PLR-063.
   - Fake engine chủ động emit player state/timeline/index/options/error.
   - Load dùng controllable `Completer`.
   - Fake clock advance đồng bộ, không sleep.

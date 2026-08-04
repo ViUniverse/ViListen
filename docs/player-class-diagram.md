@@ -218,11 +218,12 @@ class PlaybackEngine {
   +bufferedPositionStream Stream
   +durationStream Stream
   +currentIndexStream Stream
-  +effectiveSequenceStream Stream
+  +effectiveSequenceStream Stream~List~int~~
   +speedStream Stream
   +loopModeStream Stream
   +shuffleModeEnabledStream Stream
-  +load(sources,index,autoplay) Future
+  +errorStream Stream
+  +load(sources,index) Future
   +play() Future
   +pause() Future
   +stop() Future
@@ -1471,9 +1472,9 @@ class PlaybackEngine {
 
 class FakePlaybackEngine {
   <<test double>>
-  +controllableLoadCompleter
-  +emitEngineEvent()
-  +List~RecordedCall~ calls
+  +List~FakeLoadRequest~ loadRequests
+  +emitPlayerState/Timeline/Index/Options/Error()
+  +List~RecordedPlayerCall~ calls
 }
 
 class PlayerClock {
@@ -1483,6 +1484,8 @@ class PlayerClock {
 class FakePlayerClock {
   <<test double>>
   +advance(duration)
+  +elapsed Duration
+  +dispose()
 }
 
 class PlayerCubit
@@ -1575,7 +1578,7 @@ Navigator sở hữu route. Playback state chỉ mô tả audio.
 | UiPlaybackCommandTarget | <code>lib/features/player/infrastructure/ui_playback_command_target.dart</code> | Chưa có |
 | UiPlaybackGatewayAdapter | <code>lib/features/player/infrastructure/ui_playback_gateway_adapter.dart</code> | Chưa có |
 | CommandSource | <code>lib/features/player/infrastructure/command_source.dart</code> | Chưa có |
-| PlaybackEngine | <code>lib/features/player/infrastructure/engine/playback_engine.dart</code> | Chưa có |
+| PlaybackEngine | <code>lib/features/player/infrastructure/engine/playback_engine.dart</code> | Đã có PLR-048 |
 | JustAudioPlaybackEngine | <code>lib/features/player/infrastructure/engine/just_audio_playback_engine.dart</code> | Chưa có |
 | Active/Pending/Retry contexts | <code>lib/features/player/infrastructure/playback_contexts.dart</code> | Chưa có |
 | AppAudioHandler | <code>lib/features/player/infrastructure/app_audio_handler.dart</code> | Chưa có |
