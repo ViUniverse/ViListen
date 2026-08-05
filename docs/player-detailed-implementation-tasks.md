@@ -934,7 +934,9 @@ flutter analyze
   - Không biến URL thành content ID.
 - Test:
   - Optional fields null.
-  - Extras domain được preserve và không ghi đè reserved key.
+  - Chỉ preserve extras scalar tương thích `MediaItem`: `int`, `String`, `bool`,
+    finite `double`; complex extras tiếp tục thuộc Domain.
+  - Domain extras không được ghi đè reserved `audioUri`.
   - HTTPS/asset trên mọi platform; file chỉ native; HTTP/scheme khác đã bị
     validator chặn trước mapper.
 

@@ -169,7 +169,8 @@ Quy ước:
 - <code>audioUri</code>: chấp nhận <code>https</code> và asset trên mọi nền tảng; <code>file</code> chỉ trên native; từ chối <code>http</code> và mọi scheme khác trong release này.
 - <code>artUri</code>: chấp nhận <code>https</code> trên mọi nền tảng và <code>file</code> trên native; từ chối <code>http</code> và scheme khác.
 - <code>extras</code> phải immutable sâu và chỉ gồm <code>null</code>, <code>bool</code>, <code>int</code>, finite <code>double</code>, <code>String</code>, <code>Uri</code>, <code>Duration</code>, <code>List</code> hợp lệ hoặc <code>Map&lt;String, Object?&gt;</code> hợp lệ. Từ chối cycle, custom object, <code>Set</code>, key không phải <code>String</code> và số không finite.
-- Khi chuyển sang <code>audio_service.MediaItem</code>, mapper hạ tầng serialize URI, duration và extras theo contract trên.
+- Khi chuyển sang <code>audio_service.MediaItem</code>, mapper hạ tầng ánh xạ metadata qua các typed fields tương ứng; chỉ project extras scalar tương thích platform. Source <code>audioUri</code> được serialize thành <code>String</code> trong reserved key <code>extras['audioUri']</code>.
+- <code>MediaItem.extras</code> chỉ forward scalar <code>int</code>, <code>String</code>, <code>bool</code> và <code>double</code> qua platform boundary. <code>null</code>, <code>Uri</code>, <code>Duration</code>, list và map lồng nhau vẫn thuộc Domain, không đưa trực tiếp vào OS metadata. Reserved key <code>extras['audioUri']</code> chứa <code>audioUri.toString()</code>; duration dùng field <code>MediaItem.duration</code>, không encode vào extras.
 
 ### 5.2. PlaybackSnapshot
 
