@@ -1,4 +1,5 @@
 import 'package:audio_service/audio_service.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
 
 /// Maps domain playback metadata to the metadata understood by audio_service.
@@ -20,6 +21,17 @@ abstract final class PlayerItemMapper {
       audioUriExtraKey: item.audioUri.toString(),
     },
   );
+
+  /// Maps the playable URI and the same metadata used by audio_service.
+  ///
+  /// [AudioSource.uri] only constructs the source. Loading, including any
+  /// asset or network I/O, is owned by the playback engine.
+  static AudioSource toAudioSource(PlayerItem item) =>
+      AudioSource.uri(item.audioUri, tag: toMediaItem(item));
+
+  /// Maps a queue without changing its domain order.
+  static List<AudioSource> toAudioSources(Iterable<PlayerItem> items) =>
+      List<AudioSource>.unmodifiable(items.map((item) => toAudioSource(item)));
 }
 
 /// Returns only extras supported by [MediaItem.extras].
