@@ -6,18 +6,18 @@
     "configurations": [
         
         {
-            "name": "ten_project_cua_ban",
+            "name": "ViListen",
             "request": "launch",
             "type": "dart"
         },
         {
-            "name": "ten_project_cua_ban (profile mode)",
+            "name": "ViListen (profile mode)",
             "request": "launch",
             "type": "dart",
             "flutterMode": "profile"
         },
         {
-            "name": "ten_project_cua_ban (release mode)",
+            "name": "ViListen (release mode)",
             "request": "launch",
             "type": "dart",
             "flutterMode": "release"

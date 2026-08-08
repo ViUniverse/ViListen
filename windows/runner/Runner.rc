@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "ten_project_cua_ban" "\0"
+            VALUE "CompanyName", "ViUniverse" "\0"
+            VALUE "FileDescription", "ViListen" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "ten_project_cua_ban" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
-            VALUE "OriginalFilename", "ten_project_cua_ban.exe" "\0"
-            VALUE "ProductName", "ten_project_cua_ban" "\0"
+            VALUE "InternalName", "ViListen" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 ViUniverse" "\0"
+            VALUE "OriginalFilename", "ViListen.exe" "\0"
+            VALUE "ProductName", "ViListen" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

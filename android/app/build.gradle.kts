@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.ten_project_cua_ban"
+    namespace = "com.viuniverse.vilisten"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 

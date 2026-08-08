@@ -15,7 +15,7 @@ provided by each component.
 | just_audio | 0.10.6 | MIT | Audio playback | pub.dev |
 | audio_service | 0.18.19 | MIT | Background audio integration | pub.dev |
 | audio_session | 0.2.4 | MIT | Audio session management | pub.dev |
-| cupertino_icons | 1.0.8 | MIT | UI icons | pub.dev |
+| cupertino_icons | 1.0.9 | MIT | UI icons | pub.dev |
 
 ## Development and test dependencies
 

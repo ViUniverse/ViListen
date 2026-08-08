@@ -1,11 +1,11 @@
 {
-    "name": "ten_project_cua_ban",
-    "short_name": "ten_project_cua_ban",
+    "name": "ViListen",
+    "short_name": "ViListen",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "A focused player for language-listening practice.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

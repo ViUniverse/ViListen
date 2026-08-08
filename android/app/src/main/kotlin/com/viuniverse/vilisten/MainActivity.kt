@@ -1,4 +1,4 @@
-package com.example.ten_project_cua_ban
+package com.viuniverse.vilisten
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -1878,7 +1878,7 @@ rg -n "159|\\.45|The English We Speak|PlayerPresentation|LegacyPlayer|Timer" lib
 
 - Phụ thuộc: PLR-120.
 - File:
-  - `android/app/src/main/kotlin/com/example/ten_project_cua_ban/MainActivity.kt`
+  - `android/app/src/main/kotlin/com/viuniverse/vilisten/MainActivity.kt`
 - Thực hiện:
   - Đổi sang `AudioServiceActivity` hoặc `AudioServiceFragmentActivity` nếu app cần FragmentActivity.
 - Kiểm tra:
