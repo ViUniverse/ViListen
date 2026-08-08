@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /// A normalized playback failure exposed by the player domain.
 ///
 /// Runtime and platform errors are mapped to this value object before they

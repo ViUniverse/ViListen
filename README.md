@@ -15,3 +15,8 @@ A few resources to get you started if this is your first Flutter project:
 For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
+
+## License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+Note: The Apache-2.0 license applies only to the first-party code in this repository. Third-party content, dependencies, and generated code may be subject to different licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for more details.

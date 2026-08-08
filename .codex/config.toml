@@ -1,0 +1,9 @@
+[agents]
+enabled = true
+
+# Chỉ cho phép một subagent chạy tại một thời điểm.
+# Main Sol không bị tính vào con số này.
+max_concurrent_threads_per_session = 1
+
+default_subagent_model = "gpt-5.6-luna"
+default_subagent_reasoning_effort = "xhigh"

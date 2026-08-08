@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import 'dart:async';
 
 /// Injectable clock seam used by playback position/timeline projectors.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /// A typed failure for an invalid player command.
 ///
 /// Command failures are boundary validation results. They are intentionally

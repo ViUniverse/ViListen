@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import 'package:ten_project_cua_ban/features/player/application/player_command_policies.dart';
 
 /// Pure position and previous-navigation policies for playback commands.

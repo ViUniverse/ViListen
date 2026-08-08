@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import 'package:ten_project_cua_ban/features/player/infrastructure/command_source.dart';
 
 final class RecordedPlayerCall {

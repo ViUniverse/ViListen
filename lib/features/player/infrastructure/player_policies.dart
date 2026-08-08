@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import 'package:ten_project_cua_ban/features/player/domain/player_command_failure.dart';
 import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
 

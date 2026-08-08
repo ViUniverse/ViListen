@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "player-behavioral-diagrams.md",
+                "file": "player-detailed-implementation-tasks.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "player-behavioral-diagrams"
+              "title": "player-detailed-implementation-tasks"
             }
           }
         ]
@@ -94,7 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "player-behavioral-diagrams.md",
+                "file": "player-detailed-implementation-tasks.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for player-behavioral-diagrams"
+              "title": "Backlinks for player-detailed-implementation-tasks"
             }
           },
           {
@@ -113,12 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "player-behavioral-diagrams.md",
+                "file": "player-detailed-implementation-tasks.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from player-behavioral-diagrams"
+              "title": "Outgoing links from player-detailed-implementation-tasks"
             }
           },
           {
@@ -156,13 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "player-behavioral-diagrams.md",
+                "file": "player-detailed-implementation-tasks.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of player-behavioral-diagrams"
+              "title": "Outline of player-detailed-implementation-tasks"
             }
           }
         ]
@@ -185,8 +185,10 @@
   },
   "active": "41c649eacc9d79ac",
   "lastOpenFiles": [
+    "player-architecture-decisions.md",
     "player-implementation-plan.md",
     "player-class-diagram.md",
+    "player-detailed-implementation-tasks.md",
     "player-behavioral-diagrams.md"
   ]
 }

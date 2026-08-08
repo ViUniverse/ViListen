@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import 'package:flutter/material.dart';
 import 'package:ten_project_cua_ban/features/player/presentation/widgets/player_host.dart';
 

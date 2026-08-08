@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import 'dart:async';
 
 import 'package:ten_project_cua_ban/features/player/application/playback_gateway.dart';

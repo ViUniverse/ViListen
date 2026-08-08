@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 // Migration-only legacy player types. Remove with PLR-110 after all player

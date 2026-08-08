@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import 'package:just_audio/just_audio.dart';
 
 /// Internal seam between the player handler and the concrete audio engine.

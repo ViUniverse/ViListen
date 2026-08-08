@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /// Immutable metadata for one playable piece of content.
 ///
 /// The content [id] identifies the item. [audioUri] is the separate source

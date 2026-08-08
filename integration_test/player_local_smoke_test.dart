@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Local runners:
 //
 // Android: flutter test integration_test/player_local_smoke_test.dart -d <device-id>

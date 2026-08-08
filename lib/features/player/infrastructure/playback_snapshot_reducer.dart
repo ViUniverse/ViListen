@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import 'package:just_audio/just_audio.dart' as just_audio;
 import 'package:ten_project_cua_ban/features/player/domain/playback_processing_state.dart';
 import 'package:ten_project_cua_ban/features/player/domain/playback_snapshot.dart';
