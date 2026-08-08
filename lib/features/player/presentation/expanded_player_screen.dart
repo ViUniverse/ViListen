@@ -3,8 +3,8 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:ten_project_cua_ban/features/player/presentation/widgets/player_artwork.dart';
-import 'package:ten_project_cua_ban/features/player/presentation/widgets/player_control_dock.dart';
+import 'package:vi_listen/features/player/presentation/widgets/player_artwork.dart';
+import 'package:vi_listen/features/player/presentation/widgets/player_control_dock.dart';
 
 class ExpandedPlayerRoute extends PageRouteBuilder<void> {
   ExpandedPlayerRoute()

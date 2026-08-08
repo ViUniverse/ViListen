@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'package:audio_service/audio_service.dart' as audio_service;
-import 'package:ten_project_cua_ban/features/player/application/player_command_policies.dart';
-import 'package:ten_project_cua_ban/features/player/domain/playback_processing_state.dart';
-import 'package:ten_project_cua_ban/features/player/domain/playback_snapshot.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_repeat_mode.dart';
+import 'package:vi_listen/features/player/application/player_command_policies.dart';
+import 'package:vi_listen/features/player/domain/playback_processing_state.dart';
+import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
+import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
 
 /// Platform actions that may be advertised by the system media session.
 final class SystemControlCapabilities {

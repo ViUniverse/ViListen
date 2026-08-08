@@ -3,14 +3,14 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ten_project_cua_ban/features/player/application/playback_gateway.dart';
-import 'package:ten_project_cua_ban/features/player/application/player_cubit.dart';
-import 'package:ten_project_cua_ban/features/player/domain/playback_snapshot.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_repeat_mode.dart';
-import 'package:ten_project_cua_ban/features/player/infrastructure/command_source.dart';
-import 'package:ten_project_cua_ban/features/player/infrastructure/ui_playback_command_target.dart';
-import 'package:ten_project_cua_ban/features/player/infrastructure/ui_playback_gateway_adapter.dart';
+import 'package:vi_listen/features/player/application/playback_gateway.dart';
+import 'package:vi_listen/features/player/application/player_cubit.dart';
+import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
+import 'package:vi_listen/features/player/domain/player_item.dart';
+import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
+import 'package:vi_listen/features/player/infrastructure/command_source.dart';
+import 'package:vi_listen/features/player/infrastructure/ui_playback_command_target.dart';
+import 'package:vi_listen/features/player/infrastructure/ui_playback_gateway_adapter.dart';
 
 void main() {
   test('forwards the target snapshot stream unchanged', () async {

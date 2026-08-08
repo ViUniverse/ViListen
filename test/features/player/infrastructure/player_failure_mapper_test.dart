@@ -5,8 +5,8 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_failure.dart';
-import 'package:ten_project_cua_ban/features/player/infrastructure/player_failure_mapper.dart';
+import 'package:vi_listen/features/player/domain/player_failure.dart';
+import 'package:vi_listen/features/player/infrastructure/player_failure_mapper.dart';
 
 void main() {
   const mapper = PlayerFailureMapper();

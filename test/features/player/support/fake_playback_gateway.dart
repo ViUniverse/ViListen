@@ -2,10 +2,10 @@
 
 import 'dart:async';
 
-import 'package:ten_project_cua_ban/features/player/application/playback_gateway.dart';
-import 'package:ten_project_cua_ban/features/player/domain/playback_snapshot.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_repeat_mode.dart';
+import 'package:vi_listen/features/player/application/playback_gateway.dart';
+import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
+import 'package:vi_listen/features/player/domain/player_item.dart';
+import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
 
 typedef FakeCommandBehavior = FutureOr<void> Function(RecordedCommand command);
 

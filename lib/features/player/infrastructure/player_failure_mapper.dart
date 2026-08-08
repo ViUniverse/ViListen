@@ -4,7 +4,7 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_failure.dart';
+import 'package:vi_listen/features/player/domain/player_failure.dart';
 
 /// Identifies the load operation that produced an engine error.
 ///

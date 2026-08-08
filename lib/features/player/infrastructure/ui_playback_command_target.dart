@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import 'package:ten_project_cua_ban/features/player/domain/playback_snapshot.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_repeat_mode.dart';
-import 'package:ten_project_cua_ban/features/player/infrastructure/command_source.dart';
+import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
+import 'package:vi_listen/features/player/domain/player_item.dart';
+import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
+import 'package:vi_listen/features/player/infrastructure/command_source.dart';
 
 /// Internal command and snapshot port implemented by the playback handler.
 ///

@@ -3,8 +3,8 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
-import 'package:ten_project_cua_ban/features/player/infrastructure/player_item_mapper.dart';
+import 'package:vi_listen/features/player/domain/player_item.dart';
+import 'package:vi_listen/features/player/infrastructure/player_item_mapper.dart';
 
 void main() {
   group('PlayerItemMapper.toAudioSource', () {

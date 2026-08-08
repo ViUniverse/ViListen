@@ -2,7 +2,7 @@
 
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
+import 'package:vi_listen/features/player/domain/player_item.dart';
 
 /// Maps domain playback metadata to the metadata understood by audio_service.
 abstract final class PlayerItemMapper {

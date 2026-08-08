@@ -3,9 +3,9 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ten_project_cua_ban/features/player/domain/playback_snapshot.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_repeat_mode.dart';
+import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
+import 'package:vi_listen/features/player/domain/player_item.dart';
+import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
 import 'fake_playback_gateway.dart';
 import 'playback_snapshot_builder.dart';
 import 'player_test_data.dart';

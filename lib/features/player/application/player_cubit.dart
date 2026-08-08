@@ -3,11 +3,11 @@
 import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:ten_project_cua_ban/features/player/application/playback_gateway.dart';
-import 'package:ten_project_cua_ban/features/player/application/player_command_policies.dart';
-import 'package:ten_project_cua_ban/features/player/application/player_state.dart';
-import 'package:ten_project_cua_ban/features/player/domain/playback_snapshot.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
+import 'package:vi_listen/features/player/application/playback_gateway.dart';
+import 'package:vi_listen/features/player/application/player_command_policies.dart';
+import 'package:vi_listen/features/player/application/player_state.dart';
+import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
+import 'package:vi_listen/features/player/domain/player_item.dart';
 
 /// Application Cubit that exposes confirmed playback snapshots to the UI.
 final class PlayerCubit extends Cubit<PlayerState> {

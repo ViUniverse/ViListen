@@ -3,10 +3,10 @@
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart' as just_audio;
-import 'package:ten_project_cua_ban/features/player/domain/playback_processing_state.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_failure.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_repeat_mode.dart';
-import 'package:ten_project_cua_ban/features/player/infrastructure/playback_mappers.dart';
+import 'package:vi_listen/features/player/domain/playback_processing_state.dart';
+import 'package:vi_listen/features/player/domain/player_failure.dart';
+import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
+import 'package:vi_listen/features/player/infrastructure/playback_mappers.dart';
 
 void main() {
   group('PlaybackMappers.mapProcessingState', () {

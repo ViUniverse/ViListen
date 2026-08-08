@@ -4,7 +4,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:ten_project_cua_ban/features/player/infrastructure/command_source.dart';
+import 'package:vi_listen/features/player/infrastructure/command_source.dart';
 import 'fake_playback_engine.dart';
 import 'fake_player_clock.dart';
 import 'player_call_recorder.dart';

@@ -3,7 +3,7 @@
 import 'dart:async';
 
 import 'package:just_audio/just_audio.dart';
-import 'package:ten_project_cua_ban/features/player/infrastructure/engine/playback_engine.dart';
+import 'package:vi_listen/features/player/infrastructure/engine/playback_engine.dart';
 import 'player_call_recorder.dart';
 
 final class FakeLoadRequest {

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import 'package:ten_project_cua_ban/features/player/domain/playback_snapshot.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_failure.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
+import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
+import 'package:vi_listen/features/player/domain/player_failure.dart';
+import 'package:vi_listen/features/player/domain/player_item.dart';
 
 /// UI projection of one confirmed playback snapshot.
 final class PlayerState {

@@ -2,7 +2,7 @@
 
 import 'dart:async';
 
-import 'package:ten_project_cua_ban/features/player/infrastructure/player_clock.dart';
+import 'package:vi_listen/features/player/infrastructure/player_clock.dart';
 
 /// Synchronous clock for cadence tests.
 final class FakePlayerClock implements PlayerClock {

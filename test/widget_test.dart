@@ -3,8 +3,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ten_project_cua_ban/features/player/presentation/cubit/player_cubit.dart';
-import 'package:ten_project_cua_ban/main.dart';
+import 'package:vi_listen/features/player/presentation/cubit/player_cubit.dart';
+import 'package:vi_listen/main.dart';
 
 Widget buildSubject() =>
     BlocProvider(create: (_) => LegacyPlayerCubit(), child: const MyApp());

@@ -2,7 +2,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:ten_project_cua_ban/features/player/presentation/cubit/player_cubit.dart';
+import 'package:vi_listen/features/player/presentation/cubit/player_cubit.dart';
 
 class PlayerControlDock extends StatelessWidget {
   const PlayerControlDock({super.key});

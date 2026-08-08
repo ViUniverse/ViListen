@@ -2,8 +2,8 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:ten_project_cua_ban/features/player/presentation/cubit/player_cubit.dart';
-import 'package:ten_project_cua_ban/features/player/presentation/widgets/player_artwork.dart';
+import 'package:vi_listen/features/player/presentation/cubit/player_cubit.dart';
+import 'package:vi_listen/features/player/presentation/widgets/player_artwork.dart';
 
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key, required this.onOpen});

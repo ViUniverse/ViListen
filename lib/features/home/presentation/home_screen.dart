@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'package:flutter/material.dart';
-import 'package:ten_project_cua_ban/features/player/presentation/widgets/player_host.dart';
+import 'package:vi_listen/features/player/presentation/widgets/player_host.dart';
 
 class AppShell extends StatelessWidget {
   const AppShell({super.key});

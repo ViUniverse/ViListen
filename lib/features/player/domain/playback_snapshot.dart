@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import 'package:ten_project_cua_ban/features/player/domain/playback_processing_state.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_failure.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_item.dart';
-import 'package:ten_project_cua_ban/features/player/domain/player_repeat_mode.dart';
+import 'package:vi_listen/features/player/domain/playback_processing_state.dart';
+import 'package:vi_listen/features/player/domain/player_failure.dart';
+import 'package:vi_listen/features/player/domain/player_item.dart';
+import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
 
 /// Immutable playback state published by the player domain.
 ///

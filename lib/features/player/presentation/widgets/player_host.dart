@@ -2,9 +2,9 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:ten_project_cua_ban/features/player/presentation/cubit/player_cubit.dart';
-import 'package:ten_project_cua_ban/features/player/presentation/expanded_player_screen.dart';
-import 'package:ten_project_cua_ban/features/player/presentation/widgets/mini_player.dart';
+import 'package:vi_listen/features/player/presentation/cubit/player_cubit.dart';
+import 'package:vi_listen/features/player/presentation/expanded_player_screen.dart';
+import 'package:vi_listen/features/player/presentation/widgets/mini_player.dart';
 
 class PlayerHost extends StatelessWidget {
   const PlayerHost({super.key});

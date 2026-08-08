@@ -3,10 +3,10 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ten_project_cua_ban/features/player/application/player_cubit.dart';
-import 'package:ten_project_cua_ban/features/player/application/player_state.dart';
-import 'package:ten_project_cua_ban/features/player/domain/playback_processing_state.dart';
-import 'package:ten_project_cua_ban/features/player/domain/playback_snapshot.dart';
+import 'package:vi_listen/features/player/application/player_cubit.dart';
+import 'package:vi_listen/features/player/application/player_state.dart';
+import 'package:vi_listen/features/player/domain/playback_processing_state.dart';
+import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
 import '../support/fake_playback_gateway.dart';
 import '../support/playback_snapshot_builder.dart';
 import '../support/player_test_data.dart';
