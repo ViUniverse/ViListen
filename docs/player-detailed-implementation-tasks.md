@@ -1184,6 +1184,8 @@ flutter analyze
 - Files:
   - `lib/features/player/infrastructure/app_audio_handler.dart`
   - `test/features/player/infrastructure/app_audio_handler_load_commit_test.dart`
+  - `test/features/player/infrastructure/app_audio_handler_load_validation_test.dart`
+  - `test/features/player/support/fake_playback_engine.dart`
 - Thực hiện:
   - Sau engine ready và generation vẫn latest:
     1. commit queue/index/item;
@@ -1198,6 +1200,9 @@ flutter analyze
   - Engine Play failure không để state playing.
   - Replacement A → B giữ active metadata A trong lúc B loading và chỉ atomic
     commit B sau latest-ready.
+  - Replacement khi A đang playing vẫn commit B ở ready/paused trước optional
+    autoplay; pending `playing=true` cũ không được dùng làm confirmation của B.
+  - Load success đến sau handler dispose không commit, publish hoặc autoplay.
 
 ### PLR-064 — Latest-load-wins end-to-end trong handler `[CODE]` `[UNIT]`
 

@@ -12,6 +12,7 @@ import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
 import 'package:vi_listen/features/player/infrastructure/command_source.dart';
 import 'package:vi_listen/features/player/infrastructure/engine/just_audio_playback_engine.dart';
 import 'package:vi_listen/features/player/infrastructure/engine/playback_engine.dart';
+import 'package:vi_listen/features/player/infrastructure/load_generation_guard.dart';
 import 'package:vi_listen/features/player/infrastructure/playback_command_coordinator.dart';
 import 'package:vi_listen/features/player/infrastructure/playback_contexts.dart';
 import 'package:vi_listen/features/player/infrastructure/playback_mappers.dart';
@@ -20,6 +21,7 @@ import 'package:vi_listen/features/player/infrastructure/playback_snapshot_reduc
 import 'package:vi_listen/features/player/infrastructure/periodic_player_clock.dart';
 import 'package:vi_listen/features/player/infrastructure/player_clock.dart';
 import 'package:vi_listen/features/player/infrastructure/player_policies.dart';
+import 'package:vi_listen/features/player/infrastructure/system_playback_state_mapper.dart';
 import 'package:vi_listen/features/player/infrastructure/ui_playback_command_target.dart';
 
 /// Observes command ingress without coupling the handler to a logging or
@@ -66,6 +68,8 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   final List<StreamSubscription<dynamic>> _subscriptions =
       <StreamSubscription<dynamic>>[];
   final PlaybackSnapshotReducer _snapshotReducer = PlaybackSnapshotReducer();
+  final SystemPlaybackStateMapper _systemPlaybackStateMapper =
+      SystemPlaybackStateMapper();
 
   PlaybackSnapshot _latestSnapshot = PlaybackSnapshot.idle;
   ActivePlaybackContext? _active;
@@ -295,11 +299,124 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       // PLR-063 will commit only this still-current context. Keep the check at
       // the load boundary so a stale completion cannot accidentally become a
       // publication when that commit path is added.
-      if (!identical(_pending, pending) ||
+      if (_disposed ||
+          !identical(_pending, pending) ||
           !_commandCoordinator.isCurrent(generation)) {
         return;
       }
+
+      _commitPendingLoad(pending);
+
+      if (pending.autoplay && _commandCoordinator.isCurrent(generation)) {
+        _startAutoplay(generation);
+      }
     }, interrupt: _interruptCurrentLoad);
+  }
+
+  void _commitPendingLoad(PendingLoadContext pending) {
+    final events = pending.engineEvents;
+    final eventIndex = events.currentIndex;
+    final currentIndex =
+        events.hasCurrentIndex &&
+            eventIndex != null &&
+            eventIndex >= 0 &&
+            eventIndex < pending.targetQueue.length
+        ? eventIndex
+        : pending.targetIndex;
+
+    _snapshotReducer.commitQueue(
+      pending.targetQueue,
+      currentIndex: currentIndex,
+    );
+    if (events.hasPosition) {
+      _snapshotReducer.onPosition(events.position!);
+    }
+    if (events.hasBufferedPosition) {
+      _snapshotReducer.onBufferedPosition(events.bufferedPosition!);
+    }
+    if (events.hasDuration) {
+      _snapshotReducer.onDuration(events.duration);
+    }
+    if (events.hasSpeed) {
+      _snapshotReducer.onSpeed(events.speed!);
+    }
+    if (events.hasLoopMode) {
+      _snapshotReducer.onLoopMode(events.loopMode!);
+    }
+    if (events.hasShuffleEnabled) {
+      _snapshotReducer.onShuffleEnabled(events.shuffleEnabled!);
+    }
+
+    // Load is prepare-only. A pending player-state event cannot confirm
+    // autoplay, so every successful load is committed as ready and paused.
+    final committed = _snapshotReducer.onPlayerState(
+      just_audio.PlayerState(false, just_audio.ProcessingState.ready),
+    );
+    _pending = null;
+    _active = ActivePlaybackContext(
+      logicalQueue: pending.targetQueue,
+      effectiveQueue: pending.targetQueue,
+      currentIndex: committed.currentIndex,
+      position: committed.position,
+      desiredPlaying: pending.autoplay,
+    );
+
+    final diff = PlaybackPublicationDiff.between(
+      previous: _latestSnapshot,
+      current: committed,
+    );
+    _latestSnapshot = committed;
+
+    queue.add(pending.mediaItems);
+    mediaItem.add(pending.mediaItems[committed.currentIndex!]);
+    playbackState.add(_systemPlaybackStateMapper.map(committed));
+    if (diff.snapshotChanged) {
+      _snapshotController.add(committed);
+    }
+  }
+
+  void _startAutoplay(LoadGeneration generation) {
+    if (_disposed || !_commandCoordinator.isCurrent(generation)) {
+      return;
+    }
+
+    Future<void> playFuture;
+    try {
+      playFuture = _engine.play();
+    } catch (_) {
+      _publishPausedAfterAutoplayFailure(generation);
+      return;
+    }
+
+    unawaited(
+      playFuture.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {
+          _publishPausedAfterAutoplayFailure(generation);
+        },
+      ),
+    );
+  }
+
+  void _publishPausedAfterAutoplayFailure(LoadGeneration generation) {
+    if (_disposed || !_commandCoordinator.isCurrent(generation)) {
+      return;
+    }
+
+    final paused = _snapshotReducer.onPlayerState(
+      just_audio.PlayerState(false, just_audio.ProcessingState.ready),
+    );
+    final diff = PlaybackPublicationDiff.between(
+      previous: _latestSnapshot,
+      current: paused,
+    );
+    _latestSnapshot = paused;
+    if (!diff.snapshotChanged) {
+      return;
+    }
+
+    playbackState.add(_systemPlaybackStateMapper.map(paused));
+    _snapshotController.add(paused);
   }
 
   Future<void> _interruptCurrentLoad() async {

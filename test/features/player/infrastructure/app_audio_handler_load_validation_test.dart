@@ -71,10 +71,13 @@ void main() {
 
       engine.loadRequests.single.complete();
       await load;
-      expect(snapshots.last.processingState, PlaybackProcessingState.loading);
-      expect(snapshots.last.queue, isEmpty);
-      expect(handler.mediaItem.value, isNull);
-      expect(handler.queue.value, isEmpty);
+      await pumpEventQueue();
+      expect(snapshots.last.processingState, PlaybackProcessingState.ready);
+      expect(snapshots.last.currentItem, item);
+      expect(snapshots.last.currentIndex, 0);
+      expect(snapshots.last.queue, [item]);
+      expect(handler.mediaItem.value?.id, item.id);
+      expect(handler.queue.value.map((mediaItem) => mediaItem.id), [item.id]);
     },
   );
 
