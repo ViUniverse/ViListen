@@ -33,7 +33,7 @@ final class PlaybackPublicationDiff {
     required PlaybackSnapshot previous,
     required PlaybackSnapshot current,
   }) {
-    // Short-circuit before mapping or walking the queue for duplicates.
+    // Short-circuit before OS mapping and the second queue-projection pass.
     if (previous == current) {
       return const PlaybackPublicationDiff._(
         snapshotChanged: false,
@@ -54,7 +54,10 @@ final class PlaybackPublicationDiff {
     );
   }
 
-  /// Whether the domain should receive the current snapshot.
+  /// Whether the full domain snapshot value differs from [previous].
+  ///
+  /// This flag does not imply immediate emission. The caller must still apply
+  /// event-specific cadence and projector policy.
   final bool snapshotChanged;
 
   /// Whether the OS playback-state payload differs.
@@ -73,8 +76,8 @@ final class PlaybackPublicationDiff {
     PlaybackSnapshot second,
   ) => _comparisonMapper.map(first) == _comparisonMapper.map(second);
 
-  /// Compares the payload produced by [PlayerItemMapper], not PlayerItem's
-  /// full domain value. Domain-only complex extras are not platform payload.
+  /// Compares the shared publication projection, not PlayerItem's full domain
+  /// value. Domain-only complex extras are not platform payload.
   static bool _mediaItemProjectionEquals(
     PlayerItem? first,
     PlayerItem? second,
@@ -86,16 +89,8 @@ final class PlaybackPublicationDiff {
       return false;
     }
 
-    final firstMediaItem = PlayerItemMapper.toMediaItem(first);
-    final secondMediaItem = PlayerItemMapper.toMediaItem(second);
-
-    return firstMediaItem.id == secondMediaItem.id &&
-        firstMediaItem.title == secondMediaItem.title &&
-        firstMediaItem.artist == secondMediaItem.artist &&
-        firstMediaItem.album == secondMediaItem.album &&
-        firstMediaItem.artUri == secondMediaItem.artUri &&
-        firstMediaItem.duration == secondMediaItem.duration &&
-        _mapEquals(firstMediaItem.extras, secondMediaItem.extras);
+    return PlayerItemPublicationProjection.from(first) ==
+        PlayerItemPublicationProjection.from(second);
   }
 
   static bool _queueProjectionEquals(
@@ -111,25 +106,6 @@ final class PlaybackPublicationDiff {
 
     for (var index = 0; index < first.length; index++) {
       if (!_mediaItemProjectionEquals(first[index], second[index])) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  static bool _mapEquals(
-    Map<String, dynamic>? first,
-    Map<String, dynamic>? second,
-  ) {
-    if (identical(first, second)) {
-      return true;
-    }
-    if (first == null || second == null || first.length != second.length) {
-      return false;
-    }
-
-    for (final entry in first.entries) {
-      if (!second.containsKey(entry.key) || second[entry.key] != entry.value) {
         return false;
       }
     }

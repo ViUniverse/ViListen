@@ -36,6 +36,23 @@ void main() {
     expect(result.queueChanged, isFalse);
   });
 
+  test('fresh equal queue values do not create a queue publication', () {
+    final clonedA = itemA.copyWith();
+    final clonedB = itemB.copyWith();
+    final result = diffFor(
+      base.copyWith(
+        position: const Duration(seconds: 11),
+        currentItem: clonedA,
+        queue: [clonedA, clonedB],
+      ),
+    );
+
+    expect(result.snapshotChanged, isTrue);
+    expect(result.playbackStateChanged, isTrue);
+    expect(result.mediaItemChanged, isFalse);
+    expect(result.queueChanged, isFalse);
+  });
+
   test('position-only change affects domain and OS state only', () {
     final result = diffFor(
       base.copyWith(position: const Duration(seconds: 11)),
@@ -137,6 +154,44 @@ void main() {
       expect(result.mediaItemChanged, isTrue);
       expect(result.queueChanged, isTrue);
     }
+  });
+
+  test('reserved audioUri extra alone does not change OS payload', () {
+    final updatedItem = itemA.copyWith(
+      extras: const <String, Object?>{'audioUri': 'should-be-overwritten'},
+    );
+    final result = diffFor(
+      base.copyWith(currentItem: updatedItem, queue: [updatedItem, itemB]),
+    );
+
+    expect(result.snapshotChanged, isTrue);
+    expect(result.mediaItemChanged, isFalse);
+    expect(result.queueChanged, isFalse);
+  });
+
+  test('artwork change with the same ID triggers metadata and queue', () {
+    final updatedItem = itemA.copyWith(
+      artUri: Uri.parse('https://cdn.example.test/art-updated.png'),
+    );
+    final result = diffFor(
+      base.copyWith(currentItem: updatedItem, queue: [updatedItem, itemB]),
+    );
+
+    expect(result.snapshotChanged, isTrue);
+    expect(result.mediaItemChanged, isTrue);
+    expect(result.queueChanged, isTrue);
+  });
+
+  test('active to canonical idle changes every outward classification', () {
+    final result = PlaybackPublicationDiff.between(
+      previous: base,
+      current: PlaybackSnapshot.idle,
+    );
+
+    expect(result.snapshotChanged, isTrue);
+    expect(result.playbackStateChanged, isTrue);
+    expect(result.mediaItemChanged, isTrue);
+    expect(result.queueChanged, isTrue);
   });
 
   test('queue order change triggers queue while preserving current item', () {
