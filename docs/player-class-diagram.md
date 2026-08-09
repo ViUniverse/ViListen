@@ -166,12 +166,12 @@ class PlaybackGateway {
 class UiPlaybackCommandTarget {
   <<internal interface>>
   +Stream~PlaybackSnapshot~ snapshots
-  +loadQueue(items,index,autoplay,source) Future~void~
-  +play(source) Future~void~
-  +pause(source) Future~void~
-  +stop(source) Future~void~
-  +seek(position,source) Future~void~
-  +retry(source) Future~void~
+  +handleLoadQueue(items,index,autoplay,source) Future~void~
+  +handlePlay(source) Future~void~
+  +handlePause(source) Future~void~
+  +handleStop(source) Future~void~
+  +handleSeek(position,source) Future~void~
+  +handleRetry(source) Future~void~
 }
 
 class UiPlaybackGatewayAdapter {
@@ -830,20 +830,20 @@ class AppAudioHandler {
   -RetryContext? retryContext
   -bool publicationBarrier
   +Stream~PlaybackSnapshot~ snapshots
-  +loadQueue(items, initialIndex, autoplay, source) Future~void~
-  +play(source) Future~void~
-  +pause(source) Future~void~
-  +stop(source) Future~void~
-  +seek(position, source) Future~void~
-  +skipBy(offset, source) Future~void~
-  +next(source) Future~void~
-  +previous(source) Future~void~
-  +retry(source) Future~void~
+  +handleLoadQueue(items, initialIndex, autoplay, source) Future~void~
+  +handlePlay(source) Future~void~
+  +handlePause(source) Future~void~
+  +handleStop(source) Future~void~
+  +handleSeek(position, source) Future~void~
+  +handleSkipBy(offset, source) Future~void~
+  +handleNext(source) Future~void~
+  +handlePrevious(source) Future~void~
+  +handleRetry(source) Future~void~
   +skipToNext() Future~void~
   +skipToPrevious() Future~void~
-  +setSpeed(speed, source) Future~void~
-  +setRepeatMode(mode, source) Future~void~
-  +setShuffleEnabled(enabled, source) Future~void~
+  +handleSetSpeed(speed, source) Future~void~
+  +handleSetRepeatMode(mode, source) Future~void~
+  +handleSetShuffleEnabled(enabled, source) Future~void~
   +dispose() Future~void~
   -bindPlayerStreams() void
   -emitSnapshot() void

@@ -21,43 +21,44 @@ final class UiPlaybackGatewayAdapter implements PlaybackGateway {
     List<PlayerItem> items, {
     int initialIndex = 0,
     bool autoplay = true,
-  }) => _target.loadQueue(items, initialIndex, autoplay, CommandSource.ui);
+  }) =>
+      _target.handleLoadQueue(items, initialIndex, autoplay, CommandSource.ui);
 
   @override
-  Future<void> play() => _target.play(CommandSource.ui);
+  Future<void> play() => _target.handlePlay(CommandSource.ui);
 
   @override
-  Future<void> pause() => _target.pause(CommandSource.ui);
+  Future<void> pause() => _target.handlePause(CommandSource.ui);
 
   @override
-  Future<void> stop() => _target.stop(CommandSource.ui);
+  Future<void> stop() => _target.handleStop(CommandSource.ui);
 
   @override
   Future<void> seek(Duration position) =>
-      _target.seek(position, CommandSource.ui);
+      _target.handleSeek(position, CommandSource.ui);
 
   @override
   Future<void> skipBy(Duration offset) =>
-      _target.skipBy(offset, CommandSource.ui);
+      _target.handleSkipBy(offset, CommandSource.ui);
 
   @override
-  Future<void> next() => _target.next(CommandSource.ui);
+  Future<void> next() => _target.handleNext(CommandSource.ui);
 
   @override
-  Future<void> previous() => _target.previous(CommandSource.ui);
+  Future<void> previous() => _target.handlePrevious(CommandSource.ui);
 
   @override
   Future<void> setSpeed(double speed) =>
-      _target.setSpeed(speed, CommandSource.ui);
+      _target.handleSetSpeed(speed, CommandSource.ui);
 
   @override
   Future<void> setRepeatMode(PlayerRepeatMode mode) =>
-      _target.setRepeatMode(mode, CommandSource.ui);
+      _target.handleSetRepeatMode(mode, CommandSource.ui);
 
   @override
   Future<void> setShuffleEnabled(bool enabled) =>
-      _target.setShuffleEnabled(enabled, CommandSource.ui);
+      _target.handleSetShuffleEnabled(enabled, CommandSource.ui);
 
   @override
-  Future<void> retry() => _target.retry(CommandSource.ui);
+  Future<void> retry() => _target.handleRetry(CommandSource.ui);
 }

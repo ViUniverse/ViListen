@@ -9,26 +9,26 @@ import 'package:vi_listen/features/player/infrastructure/command_source.dart';
 ///
 /// The public application boundary is [PlaybackGateway]. This port carries
 /// command provenance so UI and system callbacks can converge on the same
-/// handler operations without sharing a zero-argument command API.
+/// handler operations without colliding with [BaseAudioHandler] method names.
 abstract interface class UiPlaybackCommandTarget {
   Stream<PlaybackSnapshot> get snapshots;
 
-  Future<void> loadQueue(
+  Future<void> handleLoadQueue(
     List<PlayerItem> items,
     int initialIndex,
     bool autoplay,
     CommandSource source,
   );
 
-  Future<void> play(CommandSource source);
-  Future<void> pause(CommandSource source);
-  Future<void> stop(CommandSource source);
-  Future<void> seek(Duration position, CommandSource source);
-  Future<void> skipBy(Duration offset, CommandSource source);
-  Future<void> next(CommandSource source);
-  Future<void> previous(CommandSource source);
-  Future<void> setSpeed(double speed, CommandSource source);
-  Future<void> setRepeatMode(PlayerRepeatMode mode, CommandSource source);
-  Future<void> setShuffleEnabled(bool enabled, CommandSource source);
-  Future<void> retry(CommandSource source);
+  Future<void> handlePlay(CommandSource source);
+  Future<void> handlePause(CommandSource source);
+  Future<void> handleStop(CommandSource source);
+  Future<void> handleSeek(Duration position, CommandSource source);
+  Future<void> handleSkipBy(Duration offset, CommandSource source);
+  Future<void> handleNext(CommandSource source);
+  Future<void> handlePrevious(CommandSource source);
+  Future<void> handleSetSpeed(double speed, CommandSource source);
+  Future<void> handleSetRepeatMode(PlayerRepeatMode mode, CommandSource source);
+  Future<void> handleSetShuffleEnabled(bool enabled, CommandSource source);
+  Future<void> handleRetry(CommandSource source);
 }

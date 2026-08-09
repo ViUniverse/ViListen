@@ -88,7 +88,7 @@ void main() {
     final adapter = UiPlaybackGatewayAdapter(target);
 
     await adapter.play();
-    await target.play(CommandSource.systemRemote);
+    await target.handlePlay(CommandSource.systemRemote);
 
     expect(target.calls, [
       _TargetCall('play', const <Object?>[], CommandSource.ui),
@@ -160,7 +160,7 @@ final class _FakeUiPlaybackCommandTarget implements UiPlaybackCommandTarget {
   Stream<PlaybackSnapshot> get snapshots => _controller.stream;
 
   @override
-  Future<void> loadQueue(
+  Future<void> handleLoadQueue(
     List<PlayerItem> items,
     int initialIndex,
     bool autoplay,
@@ -170,47 +170,47 @@ final class _FakeUiPlaybackCommandTarget implements UiPlaybackCommandTarget {
   }
 
   @override
-  Future<void> play(CommandSource source) async {
+  Future<void> handlePlay(CommandSource source) async {
     _record('play', const <Object?>[], source);
   }
 
   @override
-  Future<void> pause(CommandSource source) async {
+  Future<void> handlePause(CommandSource source) async {
     _record('pause', const <Object?>[], source);
   }
 
   @override
-  Future<void> stop(CommandSource source) async {
+  Future<void> handleStop(CommandSource source) async {
     _record('stop', const <Object?>[], source);
   }
 
   @override
-  Future<void> seek(Duration position, CommandSource source) async {
+  Future<void> handleSeek(Duration position, CommandSource source) async {
     _record('seek', <Object?>[position], source);
   }
 
   @override
-  Future<void> skipBy(Duration offset, CommandSource source) async {
+  Future<void> handleSkipBy(Duration offset, CommandSource source) async {
     _record('skipBy', <Object?>[offset], source);
   }
 
   @override
-  Future<void> next(CommandSource source) async {
+  Future<void> handleNext(CommandSource source) async {
     _record('next', const <Object?>[], source);
   }
 
   @override
-  Future<void> previous(CommandSource source) async {
+  Future<void> handlePrevious(CommandSource source) async {
     _record('previous', const <Object?>[], source);
   }
 
   @override
-  Future<void> setSpeed(double speed, CommandSource source) async {
+  Future<void> handleSetSpeed(double speed, CommandSource source) async {
     _record('setSpeed', <Object?>[speed], source);
   }
 
   @override
-  Future<void> setRepeatMode(
+  Future<void> handleSetRepeatMode(
     PlayerRepeatMode mode,
     CommandSource source,
   ) async {
@@ -218,12 +218,15 @@ final class _FakeUiPlaybackCommandTarget implements UiPlaybackCommandTarget {
   }
 
   @override
-  Future<void> setShuffleEnabled(bool enabled, CommandSource source) async {
+  Future<void> handleSetShuffleEnabled(
+    bool enabled,
+    CommandSource source,
+  ) async {
     _record('setShuffleEnabled', <Object?>[enabled], source);
   }
 
   @override
-  Future<void> retry(CommandSource source) async {
+  Future<void> handleRetry(CommandSource source) async {
     _record('retry', const <Object?>[], source);
   }
 
