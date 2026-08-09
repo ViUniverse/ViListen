@@ -9,6 +9,7 @@ final class JustAudioPlaybackEngine implements PlaybackEngine {
   final AudioPlayer _player = AudioPlayer();
 
   Future<void>? _disposeFuture;
+  int _loadRevision = 0;
 
   @override
   Stream<PlayerState> get playerStateStream => _player.playerStateStream;
@@ -46,15 +47,24 @@ final class JustAudioPlaybackEngine implements PlaybackEngine {
     List<AudioSource> sources, {
     required int initialIndex,
   }) async {
+    final revision = ++_loadRevision;
+    // just_audio retains its playing flag across setAudioSources. Pause first
+    // so replacement loads cannot start the new source before handler commit.
+    await _player.pause();
+    _checkLoadRevision(revision);
     await _player.setAudioSources(
       sources,
       preload: true,
       initialIndex: initialIndex,
     );
+    _checkLoadRevision(revision);
   }
 
   @override
-  Future<void> interruptLoad() => _player.stop();
+  Future<void> interruptLoad() async {
+    _loadRevision += 1;
+    await _player.stop();
+  }
 
   @override
   Future<void> play() => _player.play();
@@ -86,7 +96,14 @@ final class JustAudioPlaybackEngine implements PlaybackEngine {
       return disposeFuture;
     }
 
+    _loadRevision += 1;
     return _disposeFuture = _player.dispose();
+  }
+
+  void _checkLoadRevision(int revision) {
+    if (revision != _loadRevision) {
+      throw PlayerInterruptedException('Loading interrupted');
+    }
   }
 
   static List<int> _effectiveSequence(SequenceState state) {

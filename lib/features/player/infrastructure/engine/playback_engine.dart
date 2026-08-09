@@ -29,10 +29,11 @@ abstract interface class PlaybackEngine {
 
   Stream<PlayerException> get errorStream;
 
-  /// Loads sources and waits for the engine's load operation to complete.
+  /// Loads sources paused and waits for the operation to complete.
   ///
-  /// Autoplay is intentionally not part of this operation. The handler must
-  /// commit and publish the loaded queue before it issues [play].
+  /// An existing playing source must be paused before replacement. Autoplay is
+  /// intentionally not part of this operation. The handler must commit and
+  /// publish the loaded queue before it issues [play].
   Future<void> load(List<AudioSource> sources, {required int initialIndex});
 
   /// Interrupts the currently pending [load] and completes its handshake.

@@ -1094,6 +1094,8 @@ flutter analyze
     internal `UiPlaybackCommandTarget`; `UiPlaybackGatewayAdapter` mới implement
     public `PlaybackGateway`.
   - `JustAudioPlaybackEngine` tạo/sở hữu đúng một production `AudioPlayer`.
+  - Engine `load` pause source đang phát trước `setAudioSources` để replacement
+    vẫn prepare-only; autoplay chỉ được phép sau handler commit/publication.
   - `AppAudioHandler.production()` tạo đúng một engine adapter; test constructor
     inject fake engine và fake clock.
   - Giữ latest idle snapshot.

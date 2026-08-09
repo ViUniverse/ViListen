@@ -29,7 +29,7 @@
 | PLR-003 | Accepted | 1 | Atomic Retry và retry context |
 | PLR-004 | Accepted | 1 | Canonical Stop transaction |
 | PLR-005 | Accepted | 1 | Interruption và becoming-noisy |
-| PLR-006 | Accepted | 3 | Handler test seam và adapter boundary |
+| PLR-006 | Accepted | 4 | Handler test seam và adapter boundary |
 | PLR-007 | Accepted | 1 | Bootstrap, OS error và Android service |
 | PLR-008 | Accepted | 1 | Command-validity và rapid intent |
 | PLR-009 | Accepted | 1 | Active/pending load và replace failure |
@@ -444,10 +444,11 @@ Play, một OS event có thể tạo hai command và auto-resume trái user inte
 ## PLR-006 / 2026-08-02 / Owner: Player team
 
 **Status:** Accepted<br>
-**Decision version:** 3<br>
+**Decision version:** 4<br>
 **Revision date:** 2026-08-10<br>
-**Revision reason:** Bổ sung engine interrupt handshake cho latest-load-wins và cập nhật
-test seam/affected contracts của PLR-062.
+**Revision reason:** Bổ sung engine interrupt handshake cho latest-load-wins,
+cập nhật test seam/affected contracts của PLR-062 và khóa guarantee prepare-only
+ở trạng thái paused cho replacement load.
 
 ### Context
 
@@ -467,9 +468,10 @@ plugin. Đồng thời Application không được phụ thuộc concrete BaseAu
   không đi qua Cubit hoặc UI adapter.
 - Internal `PlaybackEngine` port chỉ expose streams/commands handler thực sự cần.
 - Contract engine/clock được khóa tại PLR-048:
-  - `load(sources, initialIndex)` chỉ chuẩn bị nguồn và chờ load hoàn tất; không
-    autoplay. Handler giữ autoplay trong pending context và chỉ gọi `play()` sau
-    commit/publication theo PLR-063.
+  - `load(sources, initialIndex)` phải pause source đang phát trước khi thay
+    source, chỉ chuẩn bị nguồn và chờ load hoàn tất với engine ở trạng thái
+    paused; không autoplay. Handler giữ autoplay trong pending context và chỉ
+    gọi `play()` sau commit/publication theo PLR-063.
   - `interruptLoad()` là engine-level cancellation handshake cho load đang chờ;
     adapter phải yêu cầu engine dừng/cancel transaction hiện tại và chỉ hoàn tất
     handshake sau khi graph lane có thể chuyển sang load mới. Đây là thao tác nội
