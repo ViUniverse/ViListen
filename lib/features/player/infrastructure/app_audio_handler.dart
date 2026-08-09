@@ -3,6 +3,7 @@
 import 'dart:async';
 
 import 'package:audio_service/audio_service.dart' as audio_service;
+import 'package:just_audio/just_audio.dart' as just_audio;
 import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
 import 'package:vi_listen/features/player/domain/player_command_failure.dart';
 import 'package:vi_listen/features/player/domain/player_item.dart';
@@ -11,6 +12,8 @@ import 'package:vi_listen/features/player/infrastructure/command_source.dart';
 import 'package:vi_listen/features/player/infrastructure/engine/just_audio_playback_engine.dart';
 import 'package:vi_listen/features/player/infrastructure/engine/playback_engine.dart';
 import 'package:vi_listen/features/player/infrastructure/playback_mappers.dart';
+import 'package:vi_listen/features/player/infrastructure/playback_publication_diff.dart';
+import 'package:vi_listen/features/player/infrastructure/playback_snapshot_reducer.dart';
 import 'package:vi_listen/features/player/infrastructure/periodic_player_clock.dart';
 import 'package:vi_listen/features/player/infrastructure/player_clock.dart';
 import 'package:vi_listen/features/player/infrastructure/ui_playback_command_target.dart';
@@ -22,9 +25,9 @@ typedef PlaybackCommandObserver =
 
 /// Audio service owner and internal playback command target.
 ///
-/// PLR-060 establishes ownership and lifecycle seams. Engine stream binding,
-/// reducer publication, and command behavior are added by the subsequent
-/// handler tasks.
+/// PLR-060 establishes ownership and lifecycle seams. Engine stream events are
+/// reduced into domain snapshots here; commands and platform publications are
+/// layered on by the subsequent handler tasks.
 final class AppAudioHandler extends audio_service.BaseAudioHandler
     with audio_service.QueueHandler, audio_service.SeekHandler
     implements UiPlaybackCommandTarget {
@@ -43,7 +46,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     PlayerClock? clock,
     PlaybackCommandObserver? commandObserver,
   ]) : _clock = clock ?? PeriodicPlayerClock(),
-       _commandObserver = commandObserver;
+       _commandObserver = commandObserver {
+    _bindEngineStreams();
+  }
 
   final PlaybackEngine _engine;
   final PlayerClock _clock;
@@ -52,8 +57,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       StreamController<PlaybackSnapshot>.broadcast();
   final List<StreamSubscription<dynamic>> _subscriptions =
       <StreamSubscription<dynamic>>[];
+  final PlaybackSnapshotReducer _snapshotReducer = PlaybackSnapshotReducer();
 
-  final PlaybackSnapshot _latestSnapshot = PlaybackSnapshot.idle;
+  PlaybackSnapshot _latestSnapshot = PlaybackSnapshot.idle;
   Future<void>? _disposeFuture;
   bool _disposed = false;
 
@@ -85,6 +91,78 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
           }
         });
       }, isBroadcast: true);
+
+  void _bindEngineStreams() {
+    _subscriptions
+      ..add(_engine.playerStateStream.listen(_onPlayerState))
+      ..add(_engine.positionStream.listen(_onPosition))
+      ..add(_engine.bufferedPositionStream.listen(_onBufferedPosition))
+      ..add(_engine.durationStream.listen(_onDuration))
+      ..add(_engine.currentIndexStream.listen(_onCurrentIndex))
+      ..add(_engine.speedStream.listen(_onSpeed))
+      ..add(_engine.loopModeStream.listen(_onLoopMode))
+      ..add(_engine.shuffleModeEnabledStream.listen(_onShuffleEnabled));
+  }
+
+  void _onPlayerState(just_audio.PlayerState state) {
+    _reduceAndPublish(() => _snapshotReducer.onPlayerState(state));
+  }
+
+  void _onPosition(Duration position) {
+    if (_disposed) {
+      return;
+    }
+
+    // Position is retained as the reducer's raw candidate. PLR-065/068 own
+    // cadence and will publish it through their respective projectors.
+    _snapshotReducer.onPosition(position);
+  }
+
+  void _onBufferedPosition(Duration bufferedPosition) {
+    _reduceAndPublish(
+      () => _snapshotReducer.onBufferedPosition(bufferedPosition),
+    );
+  }
+
+  void _onDuration(Duration? duration) {
+    _reduceAndPublish(() => _snapshotReducer.onDuration(duration));
+  }
+
+  void _onCurrentIndex(int? currentIndex) {
+    _reduceAndPublish(() => _snapshotReducer.onCurrentIndex(currentIndex));
+  }
+
+  void _onSpeed(double speed) {
+    _reduceAndPublish(() => _snapshotReducer.onSpeed(speed));
+  }
+
+  void _onLoopMode(just_audio.LoopMode loopMode) {
+    _reduceAndPublish(() => _snapshotReducer.onLoopMode(loopMode));
+  }
+
+  void _onShuffleEnabled(bool enabled) {
+    _reduceAndPublish(() => _snapshotReducer.onShuffleEnabled(enabled));
+  }
+
+  void _reduceAndPublish(PlaybackSnapshot Function() reduce) {
+    if (_disposed) {
+      return;
+    }
+
+    final reduced = reduce();
+    final diff = PlaybackPublicationDiff.between(
+      previous: _latestSnapshot,
+      current: reduced,
+    );
+
+    // Keep replay state in sync before handing the value to any subscriber.
+    _latestSnapshot = reduced;
+    if (!diff.snapshotChanged) {
+      return;
+    }
+
+    _snapshotController.add(reduced);
+  }
 
   @override
   Future<void> handleLoadQueue(

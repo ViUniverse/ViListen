@@ -1114,17 +1114,38 @@ flutter analyze
   - `lib/features/player/infrastructure/app_audio_handler.dart`
   - `test/features/player/infrastructure/app_audio_handler_streams_test.dart`
 - Thực hiện:
-  - Subscribe player state, position, buffered position, duration, current index, speed, loop và shuffle.
-  - Mọi callback đi qua reducer/diff.
-  - Lifecycle/error events emit ngay; position đi qua UI projector 200 ms và OS
-    position-only projector 1 giây.
+  - Subscribe đúng tám stream: player state, position, buffered position,
+    duration, current index, speed, loop và shuffle.
+  - Tạo và sở hữu một `PlaybackSnapshotReducer`; mỗi stream có callback/method
+    riêng để các task sau bổ sung active/pending routing mà không tháo binding.
+  - Callback non-position đi qua reducer rồi `PlaybackPublicationDiff`; cập
+    nhật `_latestSnapshot` trước khi phát vào snapshot controller và không phát
+    duplicate.
+  - Không subscribe `errorStream` trong task này; error normalization và
+    context-aware error snapshot thuộc PLR-080. Effective sequence thuộc
+    PLR-076.
+  - Không gọi `mediaItem.add`, `queue.add` hoặc `playbackState.add`; OS
+    publication thuộc PLR-066/068.
+  - Position chỉ cập nhật raw candidate trong reducer, không tự tạo timer,
+    throttle hoặc publication riêng trong handler. Lifecycle event kế tiếp có
+    thể phát snapshot hoàn chỉnh với position mới nhất. UI cadence 200 ms
+    thuộc PLR-065 và OS position-only cadence 1 giây thuộc PLR-068.
 - Test:
   - Event sequence tạo snapshot đúng.
+  - Mỗi stream chỉ thay đổi field liên quan.
   - Event trùng không emit.
-  - Current item/OS metadata không stale.
+  - Subscriber mới replay snapshot mới nhất bất đồng bộ.
   - Pause ở ready giữ processing ready.
-  - Play intent ở buffering không ép processing ready.
-  - Seek khi paused giữ playing false.
+  - Buffering với playing intent giữ `playing=true`, không ép processing
+    `ready`.
+  - Position candidate khi paused giữ `playing=false` và được gộp vào
+    lifecycle event kế tiếp.
+  - Duration null chuẩn hóa về zero; index null/out-of-range giữ tuple
+    current item/index nhất quán.
+  - Dispose hủy toàn bộ subscriptions, event sau dispose không emit, và
+    stream binding không gọi engine command.
+  - Current item/OS metadata không stale được kiểm thử ở PLR-063/066 sau khi
+    queue commit và OS publisher tồn tại.
 
 ### PLR-062 — Implement `loadQueue` validation và loading state `[CODE]` `[UNIT]`
 
