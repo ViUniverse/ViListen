@@ -85,6 +85,15 @@ final class LoadGenerationGuard {
   /// Starts a new retry transaction.
   LoadGeneration beginRetry() => beginLoad();
 
+  /// Invalidates a pending load/retry when navigation changes the source.
+  ///
+  /// Navigation may not start a load itself, so it must not allocate a new
+  /// generation. The next real load/retry will allocate the next generation.
+  void invalidateForSourceNavigation() {
+    _ensureOutsideStopBarrier();
+    _latestGeneration = null;
+  }
+
   /// Opens a Stop barrier and invalidates every pending load/retry.
   PublicationBarrier enterStop() {
     if (isStopping) {

@@ -117,6 +117,24 @@ void main() {
     expect(item.generation, retry.generation + 1);
   });
 
+  test('source navigation invalidates a pending load', () {
+    final load = guard.beginLoad();
+
+    guard.invalidateForSourceNavigation();
+
+    expect(guard.latestGeneration, isNull);
+    expect(guard.isCurrent(load), isFalse);
+  });
+
+  test('source navigation invalidates a pending retry', () {
+    final retry = guard.beginRetry();
+
+    guard.invalidateForSourceNavigation();
+
+    expect(guard.latestGeneration, isNull);
+    expect(guard.isCurrent(retry), isFalse);
+  });
+
   test(
     'Stop keeps pre-barrier events stale after the barrier closes',
     () async {
