@@ -35,6 +35,12 @@ abstract interface class PlaybackEngine {
   /// commit and publish the loaded queue before it issues [play].
   Future<void> load(List<AudioSource> sources, {required int initialIndex});
 
+  /// Interrupts the currently pending [load] and completes its handshake.
+  ///
+  /// A source-changing command must be able to release the coordinator graph
+  /// lane even when the engine's original load Future is still pending.
+  Future<void> interruptLoad();
+
   Future<void> play();
 
   Future<void> pause();

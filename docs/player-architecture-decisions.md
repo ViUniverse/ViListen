@@ -1,7 +1,7 @@
 # Player Architecture Decisions
 
 > Trạng thái: Normative contract ledger cho Player v1<br>
-> Cập nhật gần nhất: 2026-08-04<br>
+> Cập nhật gần nhất: 2026-08-10<br>
 > Owner: Player team
 
 ## 1. Quy tắc sử dụng tài liệu
@@ -29,7 +29,7 @@
 | PLR-003 | Accepted | 1 | Atomic Retry và retry context |
 | PLR-004 | Accepted | 1 | Canonical Stop transaction |
 | PLR-005 | Accepted | 1 | Interruption và becoming-noisy |
-| PLR-006 | Accepted | 2 | Handler test seam và adapter boundary |
+| PLR-006 | Accepted | 3 | Handler test seam và adapter boundary |
 | PLR-007 | Accepted | 1 | Bootstrap, OS error và Android service |
 | PLR-008 | Accepted | 1 | Command-validity và rapid intent |
 | PLR-009 | Accepted | 1 | Active/pending load và replace failure |
@@ -444,9 +444,10 @@ Play, một OS event có thể tạo hai command và auto-resume trái user inte
 ## PLR-006 / 2026-08-02 / Owner: Player team
 
 **Status:** Accepted<br>
-**Decision version:** 2<br>
-**Revision date:** 2026-08-04<br>
-**Revision reason:** Khóa engine/clock test seam và prepare-only load contract trước PLR-048.
+**Decision version:** 3<br>
+**Revision date:** 2026-08-10<br>
+**Revision reason:** Bổ sung engine interrupt handshake cho latest-load-wins và cập nhật
+test seam/affected contracts của PLR-062.
 
 ### Context
 
@@ -469,6 +470,14 @@ plugin. Đồng thời Application không được phụ thuộc concrete BaseAu
   - `load(sources, initialIndex)` chỉ chuẩn bị nguồn và chờ load hoàn tất; không
     autoplay. Handler giữ autoplay trong pending context và chỉ gọi `play()` sau
     commit/publication theo PLR-063.
+  - `interruptLoad()` là engine-level cancellation handshake cho load đang chờ;
+    adapter phải yêu cầu engine dừng/cancel transaction hiện tại và chỉ hoàn tất
+    handshake sau khi graph lane có thể chuyển sang load mới. Đây là thao tác nội
+    bộ thay source, không phải canonical user Stop và không tự tạo outward idle
+    publication.
+  - Khi `interruptLoad()` làm load Future cũ kết thúc bằng stale/interrupted
+    result, handler phải hấp thụ result đó theo generation guard; load mới không
+    được chờ vô hạn vào Future cũ.
   - `effectiveSequenceStream` phát `List<int>` theo logical index; `errorStream`
     phát lỗi engine để failure mapper xử lý ở Infrastructure.
   - `PlayerClock` chỉ expose `ticks`, `elapsed` và `dispose`; fake clock advance
@@ -502,7 +511,9 @@ plugin. Đồng thời Application không được phụ thuộc concrete BaseAu
 - `infrastructure/app_audio_handler.dart`
 - `infrastructure/engine/playback_engine.dart`
 - `infrastructure/engine/just_audio_playback_engine.dart`
-- PLR-030, PLR-042, PLR-048, PLR-060, PLR-061 và PLR-090.
+- `infrastructure/playback_contexts.dart`
+- `test/features/player/support/fake_playback_engine.dart`
+- PLR-030, PLR-042, PLR-048, PLR-060, PLR-061, PLR-062, PLR-067 và PLR-090.
 
 ### Test oracle
 
@@ -511,6 +522,8 @@ plugin. Đồng thời Application không được phụ thuộc concrete BaseAu
 - OS override và UI command hội tụ cùng internal operation nhưng khác source.
 - Production factory count chứng minh đúng một engine/AudioPlayer.
 - Race/cadence tests dùng fake engine/clock, không mở platform channel.
+- Pending load A → load B gọi đúng một interrupt handshake; B bắt đầu mà không
+  chờ vô hạn vào Future A, và stale A không tạo outward snapshot.
 
 ---
 

@@ -3,6 +3,7 @@
 import 'dart:async';
 
 import 'package:audio_service/audio_service.dart' as audio_service;
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart' as just_audio;
 import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
 import 'package:vi_listen/features/player/domain/player_command_failure.dart';
@@ -11,11 +12,14 @@ import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
 import 'package:vi_listen/features/player/infrastructure/command_source.dart';
 import 'package:vi_listen/features/player/infrastructure/engine/just_audio_playback_engine.dart';
 import 'package:vi_listen/features/player/infrastructure/engine/playback_engine.dart';
+import 'package:vi_listen/features/player/infrastructure/playback_command_coordinator.dart';
+import 'package:vi_listen/features/player/infrastructure/playback_contexts.dart';
 import 'package:vi_listen/features/player/infrastructure/playback_mappers.dart';
 import 'package:vi_listen/features/player/infrastructure/playback_publication_diff.dart';
 import 'package:vi_listen/features/player/infrastructure/playback_snapshot_reducer.dart';
 import 'package:vi_listen/features/player/infrastructure/periodic_player_clock.dart';
 import 'package:vi_listen/features/player/infrastructure/player_clock.dart';
+import 'package:vi_listen/features/player/infrastructure/player_policies.dart';
 import 'package:vi_listen/features/player/infrastructure/ui_playback_command_target.dart';
 
 /// Observes command ingress without coupling the handler to a logging or
@@ -45,14 +49,18 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     this._engine, [
     PlayerClock? clock,
     PlaybackCommandObserver? commandObserver,
+    PlaybackCommandCoordinator? commandCoordinator,
   ]) : _clock = clock ?? PeriodicPlayerClock(),
-       _commandObserver = commandObserver {
+       _commandObserver = commandObserver,
+       _commandCoordinator =
+           commandCoordinator ?? PlaybackCommandCoordinator() {
     _bindEngineStreams();
   }
 
   final PlaybackEngine _engine;
   final PlayerClock _clock;
   final PlaybackCommandObserver? _commandObserver;
+  final PlaybackCommandCoordinator _commandCoordinator;
   final StreamController<PlaybackSnapshot> _snapshotController =
       StreamController<PlaybackSnapshot>.broadcast();
   final List<StreamSubscription<dynamic>> _subscriptions =
@@ -60,6 +68,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   final PlaybackSnapshotReducer _snapshotReducer = PlaybackSnapshotReducer();
 
   PlaybackSnapshot _latestSnapshot = PlaybackSnapshot.idle;
+  ActivePlaybackContext? _active;
+  PendingLoadContext? _pending;
+  _LoadFlight? _activeLoad;
   Future<void>? _disposeFuture;
   bool _disposed = false;
 
@@ -105,10 +116,16 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onPlayerState(just_audio.PlayerState state) {
+    if (_routeToPending((events) => events.onPlayerState(state))) {
+      return;
+    }
     _reduceAndPublish(() => _snapshotReducer.onPlayerState(state));
   }
 
   void _onPosition(Duration position) {
+    if (_routeToPending((events) => events.onPosition(position))) {
+      return;
+    }
     if (_disposed) {
       return;
     }
@@ -119,29 +136,67 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onBufferedPosition(Duration bufferedPosition) {
+    if (_routeToPending(
+      (events) => events.onBufferedPosition(bufferedPosition),
+    )) {
+      return;
+    }
     _reduceAndPublish(
       () => _snapshotReducer.onBufferedPosition(bufferedPosition),
     );
   }
 
   void _onDuration(Duration? duration) {
+    if (_routeToPending((events) => events.onDuration(duration))) {
+      return;
+    }
     _reduceAndPublish(() => _snapshotReducer.onDuration(duration));
   }
 
   void _onCurrentIndex(int? currentIndex) {
+    if (_routeToPending((events) => events.onCurrentIndex(currentIndex))) {
+      return;
+    }
     _reduceAndPublish(() => _snapshotReducer.onCurrentIndex(currentIndex));
   }
 
   void _onSpeed(double speed) {
+    if (_routeToPending((events) => events.onSpeed(speed))) {
+      return;
+    }
     _reduceAndPublish(() => _snapshotReducer.onSpeed(speed));
   }
 
   void _onLoopMode(just_audio.LoopMode loopMode) {
+    if (_routeToPending((events) => events.onLoopMode(loopMode))) {
+      return;
+    }
     _reduceAndPublish(() => _snapshotReducer.onLoopMode(loopMode));
   }
 
   void _onShuffleEnabled(bool enabled) {
+    if (_routeToPending((events) => events.onShuffleEnabled(enabled))) {
+      return;
+    }
     _reduceAndPublish(() => _snapshotReducer.onShuffleEnabled(enabled));
+  }
+
+  bool _routeToPending(void Function(PendingLoadAccumulator events) update) {
+    if (_disposed) {
+      return true;
+    }
+
+    final pending = _pending;
+    if (pending == null) {
+      return false;
+    }
+
+    if (!_commandCoordinator.isCurrent(pending.generation)) {
+      return true;
+    }
+
+    update(pending.engineEvents);
+    return true;
   }
 
   void _reduceAndPublish(PlaybackSnapshot Function() reduce) {
@@ -164,13 +219,101 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _snapshotController.add(reduced);
   }
 
+  void _rememberActiveContext() {
+    if (_active != null || _latestSnapshot.queue.isEmpty) {
+      return;
+    }
+
+    _active = ActivePlaybackContext.fromSnapshot(
+      logicalQueue: _latestSnapshot.queue,
+      effectiveQueue: _latestSnapshot.queue,
+      currentIndex: _latestSnapshot.currentIndex,
+      position: _latestSnapshot.position,
+      desiredPlaying: _latestSnapshot.playing,
+    );
+  }
+
   @override
   Future<void> handleLoadQueue(
     List<PlayerItem> items,
     int initialIndex,
     bool autoplay,
     CommandSource source,
-  ) => _commandNotReady('loadQueue', source);
+  ) async {
+    _notifyCommandObserver('loadQueue', source);
+
+    final validatedItems = PlayerPolicies.validateQueue(
+      items,
+      initialIndex: initialIndex,
+      isWeb: kIsWeb,
+    );
+
+    await _commandCoordinator.load((generation) async {
+      if (_disposed) {
+        return;
+      }
+
+      _rememberActiveContext();
+      final pending = PendingLoadContext.fromItems(
+        items: validatedItems,
+        targetIndex: initialIndex,
+        autoplay: autoplay,
+        generation: generation,
+      );
+      _pending = pending;
+
+      // Keep the active tuple outward during replacement. For an initial load
+      // the reducer's canonical tuple is already empty. Pending projections
+      // stay internal until a later load-commit task confirms this generation.
+      _reduceAndPublish(_snapshotReducer.onLoadStarted);
+
+      final flight = _LoadFlight();
+      _activeLoad = flight;
+      try {
+        final engineLoad = _engine.load(
+          pending.sources,
+          initialIndex: pending.targetIndex,
+        );
+        unawaited(
+          engineLoad.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+        );
+
+        try {
+          await Future.any<void>([engineLoad, flight.interrupted]);
+        } catch (error, stackTrace) {
+          if (!_commandCoordinator.isCurrent(generation)) {
+            return;
+          }
+          Error.throwWithStackTrace(error, stackTrace);
+        }
+      } finally {
+        if (identical(_activeLoad, flight)) {
+          _activeLoad = null;
+        }
+      }
+
+      // PLR-063 will commit only this still-current context. Keep the check at
+      // the load boundary so a stale completion cannot accidentally become a
+      // publication when that commit path is added.
+      if (!identical(_pending, pending) ||
+          !_commandCoordinator.isCurrent(generation)) {
+        return;
+      }
+    }, interrupt: _interruptCurrentLoad);
+  }
+
+  Future<void> _interruptCurrentLoad() async {
+    final flight = _activeLoad;
+    if (flight == null) {
+      return;
+    }
+
+    try {
+      await _engine.interruptLoad();
+    } finally {
+      flight.completeInterrupt();
+    }
+  }
 
   @override
   Future<void> handlePlay(CommandSource source) =>
@@ -307,6 +450,18 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       _commandObserver?.call(command, source);
     } catch (_) {
       // Observability must not change the command's typed failure contract.
+    }
+  }
+}
+
+final class _LoadFlight {
+  final Completer<void> _interruptCompleter = Completer<void>();
+
+  Future<void> get interrupted => _interruptCompleter.future;
+
+  void completeInterrupt() {
+    if (!_interruptCompleter.isCompleted) {
+      _interruptCompleter.complete();
     }
   }
 }

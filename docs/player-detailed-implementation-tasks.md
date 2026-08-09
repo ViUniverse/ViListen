@@ -1153,7 +1153,10 @@ flutter analyze
 - Files:
   - `lib/features/player/infrastructure/app_audio_handler.dart`
   - `lib/features/player/infrastructure/playback_contexts.dart`
+  - `lib/features/player/infrastructure/engine/playback_engine.dart`
+  - `lib/features/player/infrastructure/engine/just_audio_playback_engine.dart`
   - `test/features/player/infrastructure/app_audio_handler_load_validation_test.dart`
+  - `test/features/player/support/fake_playback_engine.dart`
 - Thực hiện:
   - Validate trước khi chạm engine.
   - Tăng generation.
@@ -1165,8 +1168,13 @@ flutter analyze
 - Test:
   - Invalid input không gọi engine/publication.
   - Loading đến trước engine load.
+  - Engine events trong lúc pending chỉ vào accumulator, không làm đổi outward
+    snapshot active.
+  - Load A đang pending → load B hợp lệ gọi interrupt handshake và không bị
+    serialize vô hạn sau Future load A.
   - Không publish queue/metadata chưa được latest-confirmed.
-  - Replace load giữ active metadata theo PLR-009.
+  - True replacement A → B với active A đã commit và B ready thuộc test của
+    PLR-063; PLR-062 chỉ khóa loading/pending boundary theo PLR-009.
 
 ### PLR-063 — Commit load success và autoplay ordering `[CODE]` `[UNIT]` `[INTEGRATION]`
 
@@ -1186,6 +1194,8 @@ flutter analyze
   - Metadata có trước Play.
   - Không optimistic playing.
   - Engine Play failure không để state playing.
+  - Replacement A → B giữ active metadata A trong lúc B loading và chỉ atomic
+    commit B sau latest-ready.
 
 ### PLR-064 — Latest-load-wins end-to-end trong handler `[CODE]` `[UNIT]`
 

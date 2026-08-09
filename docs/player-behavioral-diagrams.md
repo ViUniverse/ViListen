@@ -776,6 +776,8 @@ UI->>Cubit: open(B)
 Cubit->>Gateway: loadQueue([B])
 Gateway->>Handler: loadQueue operation(source=ui)
 Handler->>Handler: generation=2
+Handler->>Engine: interruptLoad()
+Engine-->>Handler: interrupt handshake
 Handler->>Engine: load B
 
 Engine-->>Handler: A returns/throws interrupted

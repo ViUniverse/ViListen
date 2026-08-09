@@ -26,6 +26,11 @@ final class FakeLoadRequest {
       _completer.completeError(error, stackTrace ?? StackTrace.current);
 }
 
+final class FakeLoadInterrupted implements Exception {
+  @override
+  String toString() => 'FakeLoadInterrupted';
+}
+
 /// Platform-free test double for [PlaybackEngine].
 ///
 /// Engine events are emitted one stream at a time. Loads remain pending until
@@ -59,6 +64,7 @@ final class FakePlaybackEngine implements PlaybackEngine {
       StreamController<PlayerException>.broadcast(sync: true);
 
   final List<FakeLoadRequest> _loadRequests = <FakeLoadRequest>[];
+  FakeLoadRequest? _activeLoadRequest;
 
   Future<void>? _disposeFuture;
   bool _disposed = false;
@@ -112,6 +118,7 @@ final class FakePlaybackEngine implements PlaybackEngine {
       initialIndex: initialIndex,
     );
     _loadRequests.add(request);
+    _activeLoadRequest = request;
     recorder.record(
       'load',
       arguments: <String, Object?>{
@@ -120,6 +127,18 @@ final class FakePlaybackEngine implements PlaybackEngine {
       },
     );
     return request.future;
+  }
+
+  @override
+  Future<void> interruptLoad() {
+    _checkNotDisposed();
+    recorder.record('interruptLoad');
+    final request = _activeLoadRequest;
+    if (request != null && !request.isCompleted) {
+      _activeLoadRequest = null;
+      request.completeError(FakeLoadInterrupted());
+    }
+    return Future<void>.value();
   }
 
   @override

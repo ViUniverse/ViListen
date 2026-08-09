@@ -326,6 +326,10 @@ previous / next      → điều hướng queue
 - <code>next()</code>/<code>previous()</code>: repeat all được wrap; repeat off và one không wrap cho explicit navigation.
 - <code>setSpeed()</code>: chỉ nhận preset UI <code>0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0</code> hoặc API value finite trong <code>[0.5, 2.0]</code>.
 - <code>loadQueue()</code>: từ chối queue rỗng, index ngoài range, duplicate ID và item không hợp lệ; chỉ request mới nhất được commit atomic sau khi load thành công.
+- <code>loadQueue()</code> khi có request đang chờ phải gọi handshake
+  <code>PlaybackEngine.interruptLoad()</code> để giải phóng graph lane trước khi
+  load generation mới; kết quả stale/interrupted của request cũ không được
+  publish.
 - <code>retry()</code>: dùng target cụ thể trong <code>RetryContext</code>, không suy từ snapshot đã thay đổi; thứ tự là load với autoplay false → xác nhận latest → clamp/seek → xác nhận latest → atomic commit → play nếu desired intent vẫn true.
 - <code>stop()</code>, load mới và navigation mới làm mất hiệu lực retry context cũ.
 

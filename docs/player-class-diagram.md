@@ -224,6 +224,7 @@ class PlaybackEngine {
   +shuffleModeEnabledStream Stream
   +errorStream Stream
   +load(sources,index) Future
+  +interruptLoad() Future
   +play() Future
   +pause() Future
   +stop() Future
@@ -745,7 +746,7 @@ class UiPlaybackGatewayAdapter {
 class PlaybackEngine {
   <<internal port>>
   +engine streams
-  +load/play/pause/stop/seek
+  +load/interruptLoad/play/pause/stop/seek
   +set speed/loop/shuffle
   +dispose()
 }

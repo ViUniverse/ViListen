@@ -54,6 +54,9 @@ final class JustAudioPlaybackEngine implements PlaybackEngine {
   }
 
   @override
+  Future<void> interruptLoad() => _player.stop();
+
+  @override
   Future<void> play() => _player.play();
 
   @override
