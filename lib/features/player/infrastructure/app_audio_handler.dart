@@ -101,6 +101,13 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   _SpeedFlight? _queuedSpeedFlight;
   LoadGeneration? _lastAppliedSpeedGeneration;
   int? _lastAppliedSpeedRevision;
+  PlayerRepeatMode _desiredRepeatMode = PlaybackSnapshot.idle.repeatMode;
+  PlayerRepeatMode _lastConfirmedRepeatMode = PlaybackSnapshot.idle.repeatMode;
+  int _desiredRepeatRevision = 0;
+  _RepeatFlight? _repeatFlight;
+  _RepeatFlight? _queuedRepeatFlight;
+  LoadGeneration? _lastAppliedRepeatGeneration;
+  int? _lastAppliedRepeatRevision;
   int _nextSeekConfirmationSequence = 0;
   _SeekConfirmation? _pendingSeekConfirmation;
   int _nextPlayPauseSequence = 0;
@@ -302,6 +309,56 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onLoopMode(just_audio.LoopMode loopMode) {
+    if (_disposed) {
+      return;
+    }
+
+    final mode = PlaybackMappers.fromEngineRepeat(loopMode);
+    final flight = _repeatFlight;
+    final pending = _currentPendingLoad();
+    if (flight != null) {
+      if (!flight.dispatched ||
+          flight.revision != _desiredRepeatRevision ||
+          flight.mode != _desiredRepeatMode ||
+          flight.mode != mode) {
+        return;
+      }
+      if (pending != null && flight.generation != pending.generation) {
+        // An untagged loop event from the previous graph cannot confirm the
+        // current load. The current generation must reapply and confirm it.
+        return;
+      }
+
+      _lastConfirmedRepeatMode = mode;
+      flight.confirmed = true;
+      if (!flight.confirmation.isCompleted) {
+        flight.confirmation.complete();
+      }
+
+      if (pending != null) {
+        pending.engineEvents.onLoopMode(loopMode);
+        _lastAppliedRepeatGeneration = pending.generation;
+        _lastAppliedRepeatRevision = flight.revision;
+      } else {
+        _reduceAndPublish(() => _snapshotReducer.onLoopMode(loopMode));
+      }
+
+      _maybeFinalizeRepeatFlight(flight);
+      return;
+    }
+
+    // Once a desired repeat mode exists, an untagged event with another mode
+    // can only be stale. Do not let it overwrite the confirmed outward state.
+    if (_desiredRepeatRevision > 0 && mode != _desiredRepeatMode) {
+      return;
+    }
+
+    _lastConfirmedRepeatMode = mode;
+    if (pending != null && _desiredRepeatRevision > 0) {
+      // A current load with a desired option must reapply it through a
+      // generation-bound flight before its snapshot can be committed.
+      return;
+    }
     if (_routeToCurrentLoad((events) => events.onLoopMode(loopMode))) {
       return;
     }
@@ -639,6 +696,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
         }
 
         await _preparePendingSpeed(pending, flight);
+        await _preparePendingRepeat(pending, flight);
 
         if (_disposed ||
             !identical(_pending, pending) ||
@@ -703,7 +761,23 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     } else if (events.hasSpeed) {
       _snapshotReducer.onSpeed(events.speed!);
     }
-    if (events.hasLoopMode) {
+    if (_desiredRepeatRevision > 0) {
+      final repeatPrepared =
+          _lastAppliedRepeatGeneration == pending.generation &&
+          _lastAppliedRepeatRevision == _desiredRepeatRevision &&
+          _lastConfirmedRepeatMode == _desiredRepeatMode;
+      if (!repeatPrepared) {
+        throw StateError(
+          'Pending repeat mode was not confirmed for the current load.',
+        );
+      }
+      _snapshotReducer.onLoopMode(
+        PlaybackMappers.toEngineRepeat(_desiredRepeatMode),
+      );
+    } else if (events.hasLoopMode) {
+      _lastConfirmedRepeatMode = PlaybackMappers.fromEngineRepeat(
+        events.loopMode!,
+      );
       _snapshotReducer.onLoopMode(events.loopMode!);
     }
     if (events.hasShuffleEnabled) {
@@ -770,6 +844,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     } finally {
       flight.completeInterrupt();
       _invalidateSpeedFlightForGeneration(flight.generation);
+      _invalidateRepeatFlightForGeneration(flight.generation);
     }
   }
 
@@ -1469,6 +1544,63 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     }
   }
 
+  Future<void> _preparePendingRepeat(
+    PendingLoadContext pending,
+    _LoadFlight loadFlight,
+  ) async {
+    if (_desiredRepeatRevision == 0) {
+      return;
+    }
+
+    while (!_disposed &&
+        identical(_pending, pending) &&
+        _commandCoordinator.isCurrent(pending.generation)) {
+      final desiredMode = _desiredRepeatMode;
+      final desiredRevision = _desiredRepeatRevision;
+      if (_lastAppliedRepeatGeneration == pending.generation &&
+          _lastAppliedRepeatRevision == desiredRevision &&
+          _lastConfirmedRepeatMode == desiredMode) {
+        return;
+      }
+
+      final flight = _enqueueRepeatFlight(
+        mode: desiredMode,
+        revision: desiredRevision,
+        generation: pending.generation,
+      );
+      try {
+        await Future.any<void>([flight.future, loadFlight.interrupted]);
+      } catch (_) {
+        if (desiredRevision != _desiredRepeatRevision ||
+            desiredMode != _desiredRepeatMode) {
+          continue;
+        }
+        rethrow;
+      }
+      if (loadFlight.wasInterrupted) {
+        return;
+      }
+
+      if (!flight.confirmed) {
+        await Future.any<void>([
+          flight.confirmation.future,
+          loadFlight.interrupted,
+        ]);
+        if (loadFlight.wasInterrupted) {
+          return;
+        }
+      }
+
+      if (desiredRevision == _desiredRepeatRevision &&
+          desiredMode == _desiredRepeatMode &&
+          _lastAppliedRepeatGeneration == pending.generation &&
+          _lastAppliedRepeatRevision == desiredRevision &&
+          _lastConfirmedRepeatMode == desiredMode) {
+        return;
+      }
+    }
+  }
+
   Future<void> _submitSpeed(double speed, {LoadGeneration? generation}) {
     final existing = _matchingSpeedFlight(speed, generation);
     if (existing != null &&
@@ -1541,6 +1673,215 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       _dispatchQueuedSpeedFlight();
     }
     return next;
+  }
+
+  Future<void> _submitRepeat(
+    PlayerRepeatMode mode, {
+    LoadGeneration? generation,
+  }) {
+    // The returned Future acknowledges only the engine command. Outward mode
+    // remains engine-confirmed through loopModeStream; pending loads additionally
+    // wait for that confirmation before commit.
+    final existing = _matchingRepeatFlight(mode, generation);
+    if (existing != null &&
+        existing.revision == _desiredRepeatRevision &&
+        _desiredRepeatMode == mode) {
+      return existing.future;
+    }
+
+    _desiredRepeatMode = mode;
+    final revision = ++_desiredRepeatRevision;
+    return _enqueueRepeatFlight(
+      mode: mode,
+      revision: revision,
+      generation: generation,
+    ).future;
+  }
+
+  _RepeatFlight? _matchingRepeatFlight(
+    PlayerRepeatMode mode,
+    LoadGeneration? generation,
+  ) {
+    final current = _repeatFlight;
+    if (current != null &&
+        current.mode == mode &&
+        current.generation == generation) {
+      return current;
+    }
+
+    final queued = _queuedRepeatFlight;
+    if (queued != null &&
+        queued.mode == mode &&
+        queued.generation == generation) {
+      return queued;
+    }
+    return null;
+  }
+
+  _RepeatFlight _enqueueRepeatFlight({
+    required PlayerRepeatMode mode,
+    required int revision,
+    required LoadGeneration? generation,
+  }) {
+    final current = _repeatFlight;
+    if (current == null) {
+      final flight = _RepeatFlight(
+        mode: mode,
+        revision: revision,
+        generation: generation,
+      );
+      _repeatFlight = flight;
+      _dispatchRepeatFlight(flight);
+      return flight;
+    }
+
+    final queued = _queuedRepeatFlight;
+    if (queued != null &&
+        queued.mode == mode &&
+        queued.generation == generation) {
+      return queued;
+    }
+
+    if (queued != null) {
+      _supersedeRepeatFlight(queued);
+    }
+
+    final next = _RepeatFlight(
+      mode: mode,
+      revision: revision,
+      generation: generation,
+    );
+    _queuedRepeatFlight = next;
+    if (current.platformCompleted) {
+      _dispatchQueuedRepeatFlight();
+    }
+    return next;
+  }
+
+  void _invalidateRepeatFlightForGeneration(LoadGeneration? generation) {
+    if (generation == null) {
+      return;
+    }
+
+    final current = _repeatFlight;
+    if (current != null && current.generation == generation) {
+      _supersedeRepeatFlight(current);
+      _repeatFlight = null;
+
+      final queued = _queuedRepeatFlight;
+      if (queued != null) {
+        _supersedeRepeatFlight(queued);
+        _queuedRepeatFlight = null;
+      }
+      return;
+    }
+
+    final queued = _queuedRepeatFlight;
+    if (queued != null && queued.generation == generation) {
+      _supersedeRepeatFlight(queued);
+      _queuedRepeatFlight = null;
+    }
+  }
+
+  void _supersedeRepeatFlight(_RepeatFlight flight) {
+    flight.superseded = true;
+    flight.completeSuccess();
+    if (!flight.confirmation.isCompleted) {
+      flight.confirmation.complete();
+    }
+  }
+
+  void _dispatchRepeatFlight(_RepeatFlight flight) {
+    if (_disposed || flight.dispatched || flight.superseded) {
+      return;
+    }
+
+    flight.dispatched = true;
+    Future<void> operation;
+    try {
+      operation = _engine.setLoopMode(
+        PlaybackMappers.toEngineRepeat(flight.mode),
+      );
+    } catch (error, stackTrace) {
+      _finishRepeatFlightWithError(flight, error, stackTrace);
+      return;
+    }
+
+    unawaited(
+      operation.then<void>(
+        (_) => _finishRepeatFlight(flight),
+        onError: (Object error, StackTrace stackTrace) {
+          _finishRepeatFlightWithError(flight, error, stackTrace);
+        },
+      ),
+    );
+  }
+
+  void _dispatchQueuedRepeatFlight() {
+    final current = _repeatFlight;
+    final queued = _queuedRepeatFlight;
+    if (current == null || queued == null || !current.platformCompleted) {
+      return;
+    }
+
+    _queuedRepeatFlight = null;
+    _repeatFlight = queued;
+    _dispatchRepeatFlight(queued);
+  }
+
+  void _finishRepeatFlight(_RepeatFlight flight) {
+    flight.platformCompleted = true;
+    flight.completeSuccess();
+
+    if (!identical(_repeatFlight, flight)) {
+      return;
+    }
+
+    if (_queuedRepeatFlight != null) {
+      if (!flight.confirmation.isCompleted) {
+        flight.confirmation.complete();
+      }
+      _dispatchQueuedRepeatFlight();
+      return;
+    }
+    _maybeFinalizeRepeatFlight(flight);
+  }
+
+  void _finishRepeatFlightWithError(
+    _RepeatFlight flight,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    flight.platformCompleted = true;
+    flight.completeError(error, stackTrace);
+
+    if (!identical(_repeatFlight, flight)) {
+      return;
+    }
+
+    if (_queuedRepeatFlight != null) {
+      if (!flight.confirmation.isCompleted) {
+        flight.confirmation.complete();
+      }
+      _dispatchQueuedRepeatFlight();
+      return;
+    }
+
+    _repeatFlight = null;
+    if (_desiredRepeatRevision == flight.revision &&
+        _desiredRepeatMode == flight.mode) {
+      _desiredRepeatMode = _lastConfirmedRepeatMode;
+      _desiredRepeatRevision++;
+    }
+  }
+
+  void _maybeFinalizeRepeatFlight(_RepeatFlight flight) {
+    if (identical(_repeatFlight, flight) &&
+        flight.platformCompleted &&
+        flight.confirmed &&
+        _queuedRepeatFlight == null) {
+      _repeatFlight = null;
+    }
   }
 
   void _invalidateSpeedFlightForGeneration(LoadGeneration? generation) {
@@ -1700,7 +2041,27 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   Future<void> handleSetRepeatMode(
     PlayerRepeatMode mode,
     CommandSource source,
-  ) => _commandNotReady('setRepeatMode', source);
+  ) {
+    _notifyCommandObserver('setRepeatMode', source);
+
+    final pending = _currentPendingLoad();
+    if (pending != null) {
+      return _submitRepeat(mode, generation: pending.generation);
+    }
+
+    final snapshot = _latestSnapshot;
+    if (snapshot.failure != null ||
+        snapshot.processingState == PlaybackProcessingState.error ||
+        snapshot.processingState == PlaybackProcessingState.loading) {
+      return _commandNotReady('setRepeatMode', source, notify: false);
+    }
+
+    if (snapshot.currentItem == null || snapshot.currentIndex == null) {
+      return _commandNoCurrentItem('setRepeatMode', source, notify: false);
+    }
+
+    return _submitRepeat(mode);
+  }
 
   @override
   Future<void> handleSetShuffleEnabled(bool enabled, CommandSource source) =>
@@ -1965,6 +2326,39 @@ final class _SpeedFlight {
   });
 
   final double speed;
+  final int revision;
+  final LoadGeneration? generation;
+  final Completer<void> _completer = Completer<void>();
+  final Completer<void> confirmation = Completer<void>();
+
+  bool dispatched = false;
+  bool platformCompleted = false;
+  bool confirmed = false;
+  bool superseded = false;
+
+  Future<void> get future => _completer.future;
+
+  void completeSuccess() {
+    if (!_completer.isCompleted) {
+      _completer.complete();
+    }
+  }
+
+  void completeError(Object error, StackTrace stackTrace) {
+    if (!_completer.isCompleted) {
+      _completer.completeError(error, stackTrace);
+    }
+  }
+}
+
+final class _RepeatFlight {
+  _RepeatFlight({
+    required this.mode,
+    required this.revision,
+    required this.generation,
+  });
+
+  final PlayerRepeatMode mode;
   final int revision;
   final LoadGeneration? generation;
   final Completer<void> _completer = Completer<void>();
