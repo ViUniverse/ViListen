@@ -94,6 +94,13 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   _RestoreGraphContext? _restoring;
   _LoadFlight? _activeLoad;
   _PlayPauseIntent? _playPauseIntent;
+  double _desiredSpeed = PlaybackSnapshot.idle.speed;
+  double _lastConfirmedSpeed = PlaybackSnapshot.idle.speed;
+  int _desiredSpeedRevision = 0;
+  _SpeedFlight? _speedFlight;
+  _SpeedFlight? _queuedSpeedFlight;
+  LoadGeneration? _lastAppliedSpeedGeneration;
+  int? _lastAppliedSpeedRevision;
   int _nextSeekConfirmationSequence = 0;
   _SeekConfirmation? _pendingSeekConfirmation;
   int _nextPlayPauseSequence = 0;
@@ -242,6 +249,52 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onSpeed(double speed) {
+    if (_disposed) {
+      return;
+    }
+
+    final flight = _speedFlight;
+    if (flight != null) {
+      // Engine streams do not carry a command token. While a newer desired
+      // value exists, a different value can only be a stale confirmation.
+      if (!flight.dispatched || flight.speed != speed) {
+        return;
+      }
+
+      _lastConfirmedSpeed = speed;
+      flight.confirmed = true;
+      if (!flight.confirmation.isCompleted) {
+        flight.confirmation.complete();
+      }
+
+      final pending = _currentPendingLoad();
+      if (pending != null && flight.generation == pending.generation) {
+        pending.engineEvents.onSpeed(speed);
+        _lastAppliedSpeedGeneration = pending.generation;
+        _lastAppliedSpeedRevision = flight.revision;
+      } else if (pending == null) {
+        _reduceAndPublish(() => _snapshotReducer.onSpeed(speed));
+      }
+
+      _maybeFinalizeSpeedFlight(flight);
+      return;
+    }
+
+    // Once a caller has established a desired speed, an untagged engine event
+    // with another value is stale. Do not let it enter a newer load context or
+    // overwrite the confirmed outward state.
+    if (_desiredSpeedRevision > 0 && speed != _desiredSpeed) {
+      return;
+    }
+
+    _lastConfirmedSpeed = speed;
+    final pending = _currentPendingLoad();
+    if (pending != null && _desiredSpeedRevision > 0) {
+      // This event has no current speed-flight generation. It may belong to an
+      // older load, so the current load must reapply and confirm its desired
+      // speed before commit.
+      return;
+    }
     if (_routeToCurrentLoad((events) => events.onSpeed(speed))) {
       return;
     }
@@ -557,7 +610,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       // stay internal until a later load-commit task confirms this generation.
       _reduceAndPublish(_snapshotReducer.onLoadStarted);
 
-      final flight = _LoadFlight();
+      final flight = _LoadFlight(generation: generation);
       _activeLoad = flight;
       try {
         final engineLoad = _engine.load(
@@ -576,25 +629,33 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
           }
           Error.throwWithStackTrace(error, stackTrace);
         }
+        // PLR-063 will commit only this still-current context. Keep the check at
+        // the load boundary so a stale completion cannot accidentally become a
+        // publication when that commit path is added.
+        if (_disposed ||
+            !identical(_pending, pending) ||
+            !_commandCoordinator.isCurrent(generation)) {
+          return;
+        }
+
+        await _preparePendingSpeed(pending, flight);
+
+        if (_disposed ||
+            !identical(_pending, pending) ||
+            !_commandCoordinator.isCurrent(generation)) {
+          return;
+        }
+
+        _commitPendingLoad(pending);
+
+        if (pending.desiredPlaying &&
+            _commandCoordinator.isCurrent(generation)) {
+          _startAutoplay(generation);
+        }
       } finally {
         if (identical(_activeLoad, flight)) {
           _activeLoad = null;
         }
-      }
-
-      // PLR-063 will commit only this still-current context. Keep the check at
-      // the load boundary so a stale completion cannot accidentally become a
-      // publication when that commit path is added.
-      if (_disposed ||
-          !identical(_pending, pending) ||
-          !_commandCoordinator.isCurrent(generation)) {
-        return;
-      }
-
-      _commitPendingLoad(pending);
-
-      if (pending.desiredPlaying && _commandCoordinator.isCurrent(generation)) {
-        _startAutoplay(generation);
       }
     }, interrupt: _interruptCurrentLoad);
   }
@@ -635,7 +696,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     if (events.hasDuration) {
       _snapshotReducer.onDuration(events.duration);
     }
-    if (events.hasSpeed) {
+    if (_desiredSpeedRevision > 0) {
+      if (_lastConfirmedSpeed == _desiredSpeed) {
+        _snapshotReducer.onSpeed(_desiredSpeed);
+      }
+    } else if (events.hasSpeed) {
       _snapshotReducer.onSpeed(events.speed!);
     }
     if (events.hasLoopMode) {
@@ -704,6 +769,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       await _engine.interruptLoad();
     } finally {
       flight.completeInterrupt();
+      _invalidateSpeedFlightForGeneration(flight.generation);
     }
   }
 
@@ -1346,9 +1412,289 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     );
   }
 
+  Future<void> _preparePendingSpeed(
+    PendingLoadContext pending,
+    _LoadFlight loadFlight,
+  ) async {
+    if (_desiredSpeedRevision == 0) {
+      return;
+    }
+
+    while (!_disposed &&
+        identical(_pending, pending) &&
+        _commandCoordinator.isCurrent(pending.generation)) {
+      final desiredSpeed = _desiredSpeed;
+      final desiredRevision = _desiredSpeedRevision;
+      if (_lastAppliedSpeedGeneration == pending.generation &&
+          _lastAppliedSpeedRevision == desiredRevision &&
+          _lastConfirmedSpeed == desiredSpeed) {
+        return;
+      }
+
+      final flight = _enqueueSpeedFlight(
+        speed: desiredSpeed,
+        revision: desiredRevision,
+        generation: pending.generation,
+      );
+      try {
+        await Future.any<void>([flight.future, loadFlight.interrupted]);
+      } catch (_) {
+        if (desiredRevision != _desiredSpeedRevision ||
+            desiredSpeed != _desiredSpeed) {
+          continue;
+        }
+        rethrow;
+      }
+      if (loadFlight.wasInterrupted) {
+        return;
+      }
+
+      if (!flight.confirmed) {
+        await Future.any<void>([
+          flight.confirmation.future,
+          loadFlight.interrupted,
+        ]);
+        if (loadFlight.wasInterrupted) {
+          return;
+        }
+      }
+
+      if (desiredRevision == _desiredSpeedRevision &&
+          desiredSpeed == _desiredSpeed &&
+          _lastAppliedSpeedGeneration == pending.generation &&
+          _lastAppliedSpeedRevision == desiredRevision &&
+          _lastConfirmedSpeed == desiredSpeed) {
+        return;
+      }
+    }
+  }
+
+  Future<void> _submitSpeed(double speed, {LoadGeneration? generation}) {
+    final existing = _matchingSpeedFlight(speed, generation);
+    if (existing != null &&
+        existing.revision == _desiredSpeedRevision &&
+        _desiredSpeed == speed) {
+      return existing.future;
+    }
+
+    _desiredSpeed = speed;
+    final revision = ++_desiredSpeedRevision;
+    return _enqueueSpeedFlight(
+      speed: speed,
+      revision: revision,
+      generation: generation,
+    ).future;
+  }
+
+  _SpeedFlight? _matchingSpeedFlight(double speed, LoadGeneration? generation) {
+    final current = _speedFlight;
+    if (current != null &&
+        current.speed == speed &&
+        current.generation == generation) {
+      return current;
+    }
+
+    final queued = _queuedSpeedFlight;
+    if (queued != null &&
+        queued.speed == speed &&
+        queued.generation == generation) {
+      return queued;
+    }
+    return null;
+  }
+
+  _SpeedFlight _enqueueSpeedFlight({
+    required double speed,
+    required int revision,
+    required LoadGeneration? generation,
+  }) {
+    final current = _speedFlight;
+    if (current == null) {
+      final flight = _SpeedFlight(
+        speed: speed,
+        revision: revision,
+        generation: generation,
+      );
+      _speedFlight = flight;
+      _dispatchSpeedFlight(flight);
+      return flight;
+    }
+
+    final queued = _queuedSpeedFlight;
+    if (queued != null &&
+        queued.speed == speed &&
+        queued.generation == generation) {
+      return queued;
+    }
+
+    if (queued != null) {
+      _supersedeSpeedFlight(queued);
+    }
+
+    final next = _SpeedFlight(
+      speed: speed,
+      revision: revision,
+      generation: generation,
+    );
+    _queuedSpeedFlight = next;
+    if (current.platformCompleted) {
+      _dispatchQueuedSpeedFlight();
+    }
+    return next;
+  }
+
+  void _invalidateSpeedFlightForGeneration(LoadGeneration? generation) {
+    if (generation == null) {
+      return;
+    }
+
+    final current = _speedFlight;
+    if (current != null && current.generation == generation) {
+      _supersedeSpeedFlight(current);
+      _speedFlight = null;
+
+      // A queued operation was created behind the interrupted load. It must
+      // not remain detached from the new load's desired-speed preparation.
+      final queued = _queuedSpeedFlight;
+      if (queued != null) {
+        _supersedeSpeedFlight(queued);
+        _queuedSpeedFlight = null;
+      }
+      return;
+    }
+
+    final queued = _queuedSpeedFlight;
+    if (queued != null && queued.generation == generation) {
+      _supersedeSpeedFlight(queued);
+      _queuedSpeedFlight = null;
+    }
+  }
+
+  void _supersedeSpeedFlight(_SpeedFlight flight) {
+    flight.superseded = true;
+    flight.completeSuccess();
+    if (!flight.confirmation.isCompleted) {
+      flight.confirmation.complete();
+    }
+  }
+
+  void _dispatchSpeedFlight(_SpeedFlight flight) {
+    if (_disposed || flight.dispatched || flight.superseded) {
+      return;
+    }
+
+    flight.dispatched = true;
+    Future<void> operation;
+    try {
+      operation = _engine.setSpeed(flight.speed);
+    } catch (error, stackTrace) {
+      _finishSpeedFlightWithError(flight, error, stackTrace);
+      return;
+    }
+
+    unawaited(
+      operation.then<void>(
+        (_) => _finishSpeedFlight(flight),
+        onError: (Object error, StackTrace stackTrace) {
+          _finishSpeedFlightWithError(flight, error, stackTrace);
+        },
+      ),
+    );
+  }
+
+  void _dispatchQueuedSpeedFlight() {
+    final current = _speedFlight;
+    final queued = _queuedSpeedFlight;
+    if (current == null || queued == null || !current.platformCompleted) {
+      return;
+    }
+
+    _queuedSpeedFlight = null;
+    _speedFlight = queued;
+    _dispatchSpeedFlight(queued);
+  }
+
+  void _finishSpeedFlight(_SpeedFlight flight) {
+    flight.platformCompleted = true;
+    flight.completeSuccess();
+
+    if (!identical(_speedFlight, flight)) {
+      return;
+    }
+
+    if (_queuedSpeedFlight != null) {
+      if (!flight.confirmation.isCompleted) {
+        flight.confirmation.complete();
+      }
+      _dispatchQueuedSpeedFlight();
+      return;
+    }
+    _maybeFinalizeSpeedFlight(flight);
+  }
+
+  void _finishSpeedFlightWithError(
+    _SpeedFlight flight,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    flight.platformCompleted = true;
+    flight.completeError(error, stackTrace);
+
+    if (!identical(_speedFlight, flight)) {
+      return;
+    }
+
+    if (_queuedSpeedFlight != null) {
+      if (!flight.confirmation.isCompleted) {
+        flight.confirmation.complete();
+      }
+      _dispatchQueuedSpeedFlight();
+      return;
+    }
+
+    _speedFlight = null;
+    if (_desiredSpeedRevision == flight.revision &&
+        _desiredSpeed == flight.speed) {
+      _desiredSpeed = _lastConfirmedSpeed;
+      _desiredSpeedRevision++;
+    }
+  }
+
+  void _maybeFinalizeSpeedFlight(_SpeedFlight flight) {
+    if (identical(_speedFlight, flight) &&
+        flight.platformCompleted &&
+        flight.confirmed &&
+        _queuedSpeedFlight == null) {
+      _speedFlight = null;
+    }
+  }
+
   @override
-  Future<void> handleSetSpeed(double speed, CommandSource source) =>
-      _commandNotReady('setSpeed', source);
+  Future<void> handleSetSpeed(double speed, CommandSource source) {
+    _notifyCommandObserver('setSpeed', source);
+
+    if (!PlayerCommandPolicies.isSpeedInRange(speed)) {
+      return _commandInvalidSpeed('setSpeed', source, notify: false);
+    }
+
+    final pending = _currentPendingLoad();
+    if (pending != null) {
+      return _submitSpeed(speed, generation: pending.generation);
+    }
+
+    final snapshot = _latestSnapshot;
+    if (snapshot.failure != null ||
+        snapshot.processingState == PlaybackProcessingState.error ||
+        snapshot.processingState == PlaybackProcessingState.loading) {
+      return _commandNotReady('setSpeed', source, notify: false);
+    }
+
+    if (snapshot.currentItem == null || snapshot.currentIndex == null) {
+      return _commandNoCurrentItem('setSpeed', source, notify: false);
+    }
+
+    return _submitSpeed(speed);
+  }
 
   @override
   Future<void> handleSetRepeatMode(
@@ -1509,6 +1855,23 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     );
   }
 
+  Future<void> _commandInvalidSpeed(
+    String command,
+    CommandSource source, {
+    bool notify = true,
+  }) {
+    if (notify) {
+      _notifyCommandObserver(command, source);
+    }
+    return Future<void>.error(
+      const PlayerCommandFailure(
+        code: 'invalidSpeed',
+        message: 'Speed must be between 0.5 and 2.0.',
+        command: 'setSpeed',
+      ),
+    );
+  }
+
   void _notifyCommandObserver(String command, CommandSource source) {
     try {
       _commandObserver?.call(command, source);
@@ -1519,6 +1882,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 }
 
 final class _LoadFlight {
+  _LoadFlight({this.generation});
+
+  final LoadGeneration? generation;
   final Completer<void> _interruptCompleter = Completer<void>();
   bool wasInterrupted = false;
 
@@ -1589,4 +1955,37 @@ final class _PlayPauseIntent {
   final PlaybackSourceToken sourceToken;
   Future<void>? operation;
   bool dispatched = false;
+}
+
+final class _SpeedFlight {
+  _SpeedFlight({
+    required this.speed,
+    required this.revision,
+    required this.generation,
+  });
+
+  final double speed;
+  final int revision;
+  final LoadGeneration? generation;
+  final Completer<void> _completer = Completer<void>();
+  final Completer<void> confirmation = Completer<void>();
+
+  bool dispatched = false;
+  bool platformCompleted = false;
+  bool confirmed = false;
+  bool superseded = false;
+
+  Future<void> get future => _completer.future;
+
+  void completeSuccess() {
+    if (!_completer.isCompleted) {
+      _completer.complete();
+    }
+  }
+
+  void completeError(Object error, StackTrace stackTrace) {
+    if (!_completer.isCompleted) {
+      _completer.completeError(error, stackTrace);
+    }
+  }
 }
