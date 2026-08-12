@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart' as just_audio;
+import 'package:vi_listen/features/player/application/player_command_policies.dart';
 import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
 import 'package:vi_listen/features/player/domain/playback_processing_state.dart';
 import 'package:vi_listen/features/player/domain/player_command_failure.dart';
@@ -932,6 +933,18 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       offset: offset,
       duration: snapshot.duration,
     ),
+  );
+
+  @override
+  Future<void> rewind() => handleSkipBy(
+    -PlayerCommandPolicies.skipInterval,
+    CommandSource.systemRemote,
+  );
+
+  @override
+  Future<void> fastForward() => handleSkipBy(
+    PlayerCommandPolicies.skipInterval,
+    CommandSource.systemRemote,
   );
 
   Future<void> _runSeek({
