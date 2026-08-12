@@ -54,6 +54,7 @@ final class PendingLoadContext {
     required Iterable<PlayerItem> targetQueue,
     required this.targetIndex,
     required this.autoplay,
+    required this.desiredPlaying,
     required this.generation,
     required Iterable<just_audio.AudioSource> sources,
     required Iterable<audio_service.MediaItem> mediaItems,
@@ -82,6 +83,7 @@ final class PendingLoadContext {
       targetQueue: targetQueue,
       targetIndex: targetIndex,
       autoplay: autoplay,
+      desiredPlaying: autoplay,
       generation: generation,
       sources: sources,
       mediaItems: mediaItems,
@@ -91,6 +93,13 @@ final class PendingLoadContext {
   final List<PlayerItem> targetQueue;
   final int targetIndex;
   final bool autoplay;
+
+  /// Latest Play/Pause intent for this load generation.
+  ///
+  /// This starts from [autoplay], but direct Play/Pause commands may update it
+  /// while the engine is still loading. The target is committed paused first;
+  /// only this final value may trigger post-commit Play.
+  bool desiredPlaying;
   final LoadGeneration generation;
   final List<just_audio.AudioSource> sources;
   final List<audio_service.MediaItem> mediaItems;

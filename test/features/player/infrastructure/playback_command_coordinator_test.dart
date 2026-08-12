@@ -150,6 +150,39 @@ void main() {
   });
 
   test(
+    'dispatches Pause while a just_audio-style Play Future is pending',
+    () async {
+      final playCompletion = Completer<void>();
+      final pauseCompletion = Completer<void>();
+      var pauseDispatched = false;
+
+      final play = coordinator.setDesiredPlaying(
+        true,
+        () => playCompletion.future,
+      );
+      await _flush();
+
+      final pause = coordinator.setDesiredPlaying(false, () {
+        pauseDispatched = true;
+        if (!playCompletion.isCompleted) {
+          playCompletion.complete();
+        }
+        return pauseCompletion.future;
+      });
+      await _flush();
+
+      // The completers model the engine's two lifetime Futures. Reaching this
+      // point proves the opposite command was dispatched rather than waiting
+      // for Play completion.
+      expect(pauseDispatched, isTrue);
+      expect(pauseCompletion.isCompleted, isFalse);
+
+      pauseCompletion.complete();
+      await Future.wait<void>([play, pause]);
+    },
+  );
+
+  test(
     'load graph mutations are serialized behind an interrupt handshake',
     () async {
       late LoadGeneration firstGeneration;

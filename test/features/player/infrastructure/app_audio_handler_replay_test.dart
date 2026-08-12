@@ -170,6 +170,93 @@ void main() {
   });
 
   test(
+    'completed Replay hands the final Play intent through Pause before seek completes',
+    () async {
+      final item = testPlayerItem(id: 'replay-play-pause-play');
+      await _load(handler, engine, [item]);
+      await _completeCurrentItem(engine);
+
+      final seekCompleter = Completer<void>();
+      engine.seekAction = (_, {index}) => seekCompleter.future;
+
+      final firstPlay = handler.handlePlay(CommandSource.ui);
+      await pumpEventQueue();
+      expect(engine.callCountFor('seek'), 1);
+
+      final pause = handler.handlePause(CommandSource.ui);
+      final finalPlay = handler.handlePlay(CommandSource.systemRemote);
+
+      expect(engine.callCountFor('pause'), 0);
+
+      seekCompleter.complete();
+      await Future.wait<void>([firstPlay, pause, finalPlay]);
+
+      expect(engine.callCountFor('seek'), 1);
+      expect(engine.callCountFor('play'), 1);
+    },
+  );
+
+  test(
+    'two completed Replay cycles hand off dispatched ownership to the final Play',
+    () async {
+      final item = testPlayerItem(id: 'replay-two-cycles');
+      await _load(handler, engine, [item]);
+      await _completeCurrentItem(engine);
+
+      final firstSeek = Completer<void>();
+      engine.seekAction = (_, {index}) => firstSeek.future;
+
+      final firstPlay = handler.handlePlay(CommandSource.ui);
+      await pumpEventQueue();
+      expect(engine.callCountFor('seek'), 1);
+
+      final pause = handler.handlePause(CommandSource.ui);
+      final finalPlay = handler.handlePlay(CommandSource.systemRemote);
+      expect(engine.callCountFor('pause'), 0);
+
+      firstSeek.complete();
+      await Future.wait<void>([firstPlay, pause, finalPlay]);
+      expect(engine.callCountFor('play'), 1);
+
+      engine.emitPlayerState(
+        just_audio.PlayerState(true, just_audio.ProcessingState.ready),
+      );
+      await pumpEventQueue();
+      await _completeCurrentItem(engine);
+
+      final secondSeek = Completer<void>();
+      engine.seekAction = (_, {index}) => secondSeek.future;
+      final secondPlay = handler.handlePlay(CommandSource.ui);
+      await pumpEventQueue();
+      expect(engine.callCountFor('seek'), 2);
+
+      secondSeek.complete();
+      await secondPlay;
+
+      expect(engine.callCountFor('seek'), 2);
+      expect(engine.callCountFor('play'), 2);
+    },
+  );
+
+  test('Replay continuation becomes a no-op after handler dispose', () async {
+    final item = testPlayerItem(id: 'replay-dispose');
+    await _load(handler, engine, [item]);
+    await _completeCurrentItem(engine);
+
+    final seek = Completer<void>();
+    engine.seekAction = (_, {index}) => seek.future;
+    final replay = handler.handlePlay(CommandSource.ui);
+    await pumpEventQueue();
+    expect(engine.callCountFor('seek'), 1);
+
+    await handler.dispose();
+    seek.complete();
+    await replay;
+
+    expect(engine.callCountFor('play'), 0);
+  });
+
+  test(
     'source replacement invalidates replay after its pending seek',
     () async {
       final itemA = testPlayerItem(id: 'replay-source-a');

@@ -40,11 +40,13 @@ final class FakePlaybackEngine implements PlaybackEngine {
   FakePlaybackEngine({
     PlayerCallRecorder? recorder,
     this.playAction,
+    this.pauseAction,
     this.seekAction,
   }) : recorder = recorder ?? PlayerCallRecorder();
 
   final PlayerCallRecorder recorder;
   Future<void> Function()? playAction;
+  Future<void> Function()? pauseAction;
   Future<void> Function(Duration position, {int? index})? seekAction;
 
   final StreamController<PlayerState> _playerStateController =
@@ -157,7 +159,7 @@ final class FakePlaybackEngine implements PlaybackEngine {
   Future<void> pause() {
     _checkNotDisposed();
     recorder.record('pause');
-    return Future<void>.value();
+    return pauseAction?.call() ?? Future<void>.value();
   }
 
   @override

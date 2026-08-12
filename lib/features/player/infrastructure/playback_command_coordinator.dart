@@ -55,7 +55,8 @@ final class PlaybackCommandCoordinator {
   _GraphRequest? _activeGraphRequest;
   _GraphRequest? _lastGraphRequest;
 
-  _PlayPauseBatch? _inFlightPlayPause;
+  _PlayPauseBatch? _latestPlayPause;
+  _PlayPauseBatch? _lastDispatchedPlayPause;
   _PlayPauseBatch? _pendingPlayPause;
   bool _drainingPlayPause = false;
 
@@ -175,14 +176,20 @@ final class PlaybackCommandCoordinator {
 
   /// Submits a desired Play/Pause intent.
   ///
-  /// Equal intents join the in-flight/pending batch. An opposite intent waits
-  /// for the in-flight platform call and becomes the next call. If it is
-  /// replaced before execution, it is completed as an idempotent no-op.
+  /// Equal intents join the latest active or pending batch. An opposite intent
+  /// becomes the next dispatch, even when the previous platform Future is
+  /// still pending. This matters for just_audio, whose [AudioPlayer.play]
+  /// Future represents the lifetime of playback rather than command
+  /// acknowledgement.
+  ///
+  /// The coordinator serializes command invocation, not the lifetime of the
+  /// returned platform Futures. Each platform Future is observed separately
+  /// and completes only its own batch. If an opposite intent is replaced
+  /// before dispatch, that pending batch completes as an idempotent no-op.
   Future<void> setDesiredPlaying(
     bool desired,
     PlaybackCommandCall platformCall,
   ) {
-    final inFlight = _inFlightPlayPause;
     final pending = _pendingPlayPause;
 
     if (pending != null && pending.desired == desired) {
@@ -192,21 +199,42 @@ final class PlaybackCommandCoordinator {
     if (pending != null) {
       _pendingPlayPause = null;
       pending.completeSuccess();
+
+      final dispatched = _lastDispatchedPlayPause;
+      if (dispatched != null &&
+          !dispatched.completed &&
+          dispatched.desired == desired) {
+        _latestPlayPause = dispatched;
+        return dispatched.future;
+      }
     }
 
-    if (inFlight != null && inFlight.desired == desired) {
-      return inFlight.future;
+    final latest = _latestPlayPause;
+    if (latest != null && !latest.completed && latest.desired == desired) {
+      return latest.future;
     }
 
     final batch = _PlayPauseBatch(desired: desired, platformCall: platformCall);
-    if (inFlight == null) {
-      _inFlightPlayPause = batch;
-    } else {
-      _pendingPlayPause = batch;
-    }
+    _latestPlayPause = batch;
+    _pendingPlayPause = batch;
 
     _ensurePlayPauseDrain();
     return batch.future;
+  }
+
+  /// Reports whether [operation] belongs to a Play/Pause batch that already
+  /// invoked its platform call. This is used when last-intent-wins hands an
+  /// in-flight batch Future to a newer handler intent.
+  bool isPlayPauseOperationDispatched(Future<void> operation) {
+    final latest = _latestPlayPause;
+    if (latest != null && identical(latest.future, operation)) {
+      return latest.dispatched;
+    }
+
+    final dispatched = _lastDispatchedPlayPause;
+    return dispatched != null &&
+        identical(dispatched.future, operation) &&
+        dispatched.dispatched;
   }
 
   /// Invalidates pending Play/Pause and retry continuations.
@@ -298,6 +326,11 @@ final class PlaybackCommandCoordinator {
     final pending = _pendingPlayPause;
     _pendingPlayPause = null;
     pending?.completeSuccess();
+
+    // An already-dispatched platform Future is allowed to settle naturally,
+    // but a later source command must never coalesce with that old batch.
+    _latestPlayPause = null;
+    _lastDispatchedPlayPause = null;
   }
 
   void _clearLastGraphRequest(_GraphRequest request) {
@@ -318,33 +351,55 @@ final class PlaybackCommandCoordinator {
     }
 
     _drainingPlayPause = true;
-    unawaited(_drainPlayPause());
+    scheduleMicrotask(_drainPlayPause);
   }
 
   Future<void> _drainPlayPause() async {
     while (true) {
-      final batch = _inFlightPlayPause;
+      final batch = _pendingPlayPause;
       if (batch == null) {
         _drainingPlayPause = false;
         return;
       }
 
+      _pendingPlayPause = null;
+      batch.dispatched = true;
+      _lastDispatchedPlayPause = batch;
+
+      Future<void> platformFuture;
       try {
-        await batch.platformCall();
-        batch.completeSuccess();
+        platformFuture = batch.platformCall();
       } catch (error, stackTrace) {
         batch.completeError(error, stackTrace);
+        _clearLatestPlayPause(batch);
+        continue;
       }
 
-      _inFlightPlayPause = null;
-      final next = _pendingPlayPause;
-      _pendingPlayPause = null;
-      if (next == null) {
-        _drainingPlayPause = false;
-        return;
-      }
+      // Do not await this Future here. With just_audio it completes when
+      // playback pauses/completes, and awaiting it would deadlock the next
+      // Pause dispatch. The observer still preserves the Future/error
+      // contract for this individual batch.
+      unawaited(
+        platformFuture.then<void>(
+          (_) {
+            batch.completeSuccess();
+            _clearLatestPlayPause(batch);
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            batch.completeError(error, stackTrace);
+            _clearLatestPlayPause(batch);
+          },
+        ),
+      );
+    }
+  }
 
-      _inFlightPlayPause = next;
+  void _clearLatestPlayPause(_PlayPauseBatch batch) {
+    if (identical(_latestPlayPause, batch)) {
+      _latestPlayPause = null;
+    }
+    if (identical(_lastDispatchedPlayPause, batch)) {
+      _lastDispatchedPlayPause = null;
     }
   }
 }
@@ -451,6 +506,10 @@ final class _PlayPauseBatch {
   final bool desired;
   final PlaybackCommandCall platformCall;
   final Completer<void> _completer = Completer<void>();
+
+  bool dispatched = false;
+
+  bool get completed => _completer.isCompleted;
 
   Future<void> get future => _completer.future;
 

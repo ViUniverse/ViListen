@@ -6,6 +6,7 @@ import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart' as just_audio;
 import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
+import 'package:vi_listen/features/player/domain/playback_processing_state.dart';
 import 'package:vi_listen/features/player/domain/player_command_failure.dart';
 import 'package:vi_listen/features/player/domain/player_item.dart';
 import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
@@ -87,6 +88,8 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   ActivePlaybackContext? _active;
   PendingLoadContext? _pending;
   _LoadFlight? _activeLoad;
+  _PlayPauseIntent? _playPauseIntent;
+  int _nextPlayPauseSequence = 0;
   Future<void>? _disposeFuture;
   bool _disposed = false;
 
@@ -135,6 +138,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     if (_routeToPending((events) => events.onPlayerState(state))) {
       return;
     }
+    _reconcilePlayPauseConfirmation(state.playing);
     _reduceAndPublish(() => _snapshotReducer.onPlayerState(state));
   }
 
@@ -305,6 +309,29 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     );
   }
 
+  PendingLoadContext? _currentPendingLoad() {
+    final pending = _pending;
+    if (pending == null || !_commandCoordinator.isCurrent(pending.generation)) {
+      return null;
+    }
+    return pending;
+  }
+
+  void _setActiveDesiredPlaying(bool desiredPlaying) {
+    final active = _active;
+    if (active == null) {
+      return;
+    }
+
+    _active = ActivePlaybackContext(
+      logicalQueue: active.logicalQueue,
+      effectiveQueue: active.effectiveQueue,
+      currentIndex: active.currentIndex,
+      position: active.position,
+      desiredPlaying: desiredPlaying,
+    );
+  }
+
   @override
   Future<void> handleLoadQueue(
     List<PlayerItem> items,
@@ -319,6 +346,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       initialIndex: initialIndex,
       isWeb: kIsWeb,
     );
+
+    // Source-changing commands invalidate local intent records immediately
+    // after validation succeeds. The coordinator performs the corresponding
+    // platform-side invalidation before the new graph transaction starts.
+    _playPauseIntent = null;
 
     await _commandCoordinator.load((generation) async {
       if (_disposed) {
@@ -375,7 +407,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
       _commitPendingLoad(pending);
 
-      if (pending.autoplay && _commandCoordinator.isCurrent(generation)) {
+      if (pending.desiredPlaying && _commandCoordinator.isCurrent(generation)) {
         _startAutoplay(generation);
       }
     }, interrupt: _interruptCurrentLoad);
@@ -426,7 +458,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       effectiveQueue: pending.targetQueue,
       currentIndex: committed.currentIndex,
       position: committed.position,
-      desiredPlaying: pending.autoplay,
+      desiredPlaying: pending.desiredPlaying,
     );
 
     _routeImmediate(committed);
@@ -437,14 +469,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       return;
     }
 
-    Future<void> playFuture;
-    try {
-      playFuture = _engine.play();
-    } catch (_) {
-      _publishPausedAfterAutoplayFailure(generation);
-      return;
-    }
-
+    final playFuture = _requestDesiredPlaying(
+      true,
+      platformCall: (_) => _engine.play(),
+    );
     unawaited(
       playFuture.then<void>(
         (_) {},
@@ -481,61 +509,198 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
   @override
   Future<void> handlePlay(CommandSource source) {
+    _notifyCommandObserver('play', source);
+
+    final pending = _currentPendingLoad();
+    if (pending != null) {
+      pending.desiredPlaying = true;
+      return Future<void>.value();
+    }
+
     final snapshot = _latestSnapshot;
     final currentItem = snapshot.currentItem;
     final currentIndex = snapshot.currentIndex;
-    if (!_canReplay(snapshot, currentItem, currentIndex)) {
-      return _commandNotReady('play', source);
-    }
-
-    final replay = _ReplayContext(
-      sourceToken: _commandCoordinator.captureSourceToken(),
-      item: currentItem!,
-      index: currentIndex!,
-    );
-    _notifyCommandObserver('play', source);
-    return _commandCoordinator.setDesiredPlaying(
-      true,
-      () => _runReplay(replay),
-    );
-  }
-
-  bool _canReplay(
-    PlaybackSnapshot snapshot,
-    PlayerItem? currentItem,
-    int? currentIndex,
-  ) {
-    if (!snapshot.isCompleted || snapshot.playing) {
-      return false;
+    if (snapshot.failure != null ||
+        snapshot.processingState == PlaybackProcessingState.error) {
+      return _commandNotReady('play', source, notify: false);
     }
 
     if (currentItem == null || currentIndex == null) {
-      return false;
+      return _commandNoCurrentItem('play', source, notify: false);
     }
 
-    return currentIndex >= 0 &&
-        currentIndex < snapshot.queue.length &&
-        snapshot.queue[currentIndex] == currentItem;
+    final currentIntent = _playPauseIntent;
+    if (snapshot.isCompleted) {
+      if (currentIntent != null &&
+          currentIntent.desired &&
+          currentIntent.operation != null &&
+          _isCurrentPlayPauseIntent(currentIntent)) {
+        return currentIntent.operation!;
+      }
+
+      return _requestDesiredPlaying(
+        true,
+        platformCall: (intent) =>
+            _runReplay(intent, item: currentItem, index: currentIndex),
+      );
+    }
+
+    if (snapshot.playing && (currentIntent == null || currentIntent.desired)) {
+      return Future<void>.value();
+    }
+
+    return _requestDesiredPlaying(true, platformCall: (_) => _engine.play());
   }
 
-  Future<void> _runReplay(_ReplayContext replay) async {
-    await _engine.seek(Duration.zero, index: replay.index);
-    if (!_isReplayCurrent(replay)) {
+  Future<void> _runReplay(
+    _PlayPauseIntent intent, {
+    required PlayerItem item,
+    required int index,
+  }) async {
+    await _engine.seek(Duration.zero, index: index);
+    if (!_isCurrentReplayContinuation(intent, item: item, index: index)) {
       return;
     }
 
     await _engine.play();
   }
 
-  bool _isReplayCurrent(_ReplayContext replay) =>
+  bool _isCurrentReplayContinuation(
+    _PlayPauseIntent intent, {
+    required PlayerItem item,
+    required int index,
+  }) {
+    if (_disposed) {
+      return false;
+    }
+
+    if (_latestSnapshot.currentIndex != index ||
+        _latestSnapshot.currentItem != item) {
+      return false;
+    }
+
+    if (_isCurrentPlayPauseIntent(intent)) {
+      return true;
+    }
+
+    // The coordinator may hand the same in-flight Play operation back after
+    // an opposite pending intent is superseded. Preserve the stale guard, but
+    // let the original seek continue when the current record owns that exact
+    // operation and source.
+    final current = _playPauseIntent;
+    return current != null &&
+        current.desired &&
+        intent.desired &&
+        current.operation != null &&
+        identical(current.operation, intent.operation) &&
+        _commandCoordinator.isSourceTokenCurrent(intent.sourceToken) &&
+        _commandCoordinator.isSourceTokenCurrent(current.sourceToken);
+  }
+
+  Future<void> _requestDesiredPlaying(
+    bool desired, {
+    required Future<void> Function(_PlayPauseIntent intent) platformCall,
+  }) {
+    final existing = _playPauseIntent;
+    _PlayPauseIntent intent;
+    if (existing != null &&
+        existing.desired == desired &&
+        existing.operation != null &&
+        _isCurrentPlayPauseIntent(existing)) {
+      return existing.operation!;
+    }
+
+    intent = _PlayPauseIntent(
+      desired: desired,
+      sequence: ++_nextPlayPauseSequence,
+      sourceToken: _commandCoordinator.captureSourceToken(),
+    );
+    _playPauseIntent = intent;
+    _setActiveDesiredPlaying(desired);
+
+    final operation = _commandCoordinator.setDesiredPlaying(desired, () {
+      intent.dispatched = true;
+      if (!_isCurrentPlayPauseIntent(intent)) {
+        return Future<void>.value();
+      }
+      return platformCall(intent);
+    });
+    intent.operation = operation;
+    intent.dispatched = _commandCoordinator.isPlayPauseOperationDispatched(
+      operation,
+    );
+    unawaited(
+      operation.then<void>(
+        // A successful platform Future only means that the engine command
+        // completed. The confirmed state still comes from playerStateStream.
+        (_) {},
+        onError: (Object _, StackTrace _) => _failPlayPauseIntent(intent),
+      ),
+    );
+    return operation;
+  }
+
+  bool _isCurrentPlayPauseIntent(_PlayPauseIntent intent) =>
       !_disposed &&
-      _commandCoordinator.isSourceTokenCurrent(replay.sourceToken) &&
-      _latestSnapshot.currentIndex == replay.index &&
-      _latestSnapshot.currentItem == replay.item;
+      identical(_playPauseIntent, intent) &&
+      _commandCoordinator.isSourceTokenCurrent(intent.sourceToken);
+
+  void _reconcilePlayPauseConfirmation(bool playing) {
+    final intent = _playPauseIntent;
+    if (intent == null ||
+        !intent.dispatched ||
+        intent.desired != playing ||
+        !_isCurrentPlayPauseIntent(intent)) {
+      return;
+    }
+
+    _playPauseIntent = null;
+  }
+
+  void _failPlayPauseIntent(_PlayPauseIntent intent) {
+    if (!_isCurrentPlayPauseIntent(intent)) {
+      return;
+    }
+
+    _playPauseIntent = null;
+    _setActiveDesiredPlaying(_latestSnapshot.playing);
+  }
 
   @override
-  Future<void> handlePause(CommandSource source) =>
-      _commandNotReady('pause', source);
+  Future<void> handlePause(CommandSource source) {
+    _notifyCommandObserver('pause', source);
+
+    final pending = _currentPendingLoad();
+    if (pending != null) {
+      pending.desiredPlaying = false;
+      _playPauseIntent = null;
+      return Future<void>.value();
+    }
+
+    final snapshot = _latestSnapshot;
+    if (snapshot.failure != null ||
+        snapshot.processingState == PlaybackProcessingState.error ||
+        snapshot.currentItem == null ||
+        snapshot.currentIndex == null) {
+      _playPauseIntent = null;
+      return Future<void>.value();
+    }
+
+    final currentIntent = _playPauseIntent;
+    if (!snapshot.playing) {
+      if (currentIntent != null &&
+          !currentIntent.desired &&
+          currentIntent.operation != null &&
+          _isCurrentPlayPauseIntent(currentIntent)) {
+        return currentIntent.operation!;
+      }
+      if (currentIntent == null || !currentIntent.desired) {
+        return Future<void>.value();
+      }
+    }
+
+    return _requestDesiredPlaying(false, platformCall: (_) => _engine.pause());
+  }
 
   @override
   Future<void> handleStop(CommandSource source) =>
@@ -669,12 +834,35 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     }
   }
 
-  Future<void> _commandNotReady(String command, CommandSource source) {
-    _notifyCommandObserver(command, source);
+  Future<void> _commandNotReady(
+    String command,
+    CommandSource source, {
+    bool notify = true,
+  }) {
+    if (notify) {
+      _notifyCommandObserver(command, source);
+    }
     return Future<void>.error(
       PlayerCommandFailure(
         code: 'commandUnavailable',
         message: 'Playback command is unavailable.',
+        command: command,
+      ),
+    );
+  }
+
+  Future<void> _commandNoCurrentItem(
+    String command,
+    CommandSource source, {
+    bool notify = true,
+  }) {
+    if (notify) {
+      _notifyCommandObserver(command, source);
+    }
+    return Future<void>.error(
+      PlayerCommandFailure(
+        code: 'noCurrentItem',
+        message: 'Playback command requires a current item.',
         command: command,
       ),
     );
@@ -701,14 +889,16 @@ final class _LoadFlight {
   }
 }
 
-final class _ReplayContext {
-  const _ReplayContext({
+final class _PlayPauseIntent {
+  _PlayPauseIntent({
+    required this.desired,
+    required this.sequence,
     required this.sourceToken,
-    required this.item,
-    required this.index,
   });
 
+  final bool desired;
+  final int sequence;
   final PlaybackSourceToken sourceToken;
-  final PlayerItem item;
-  final int index;
+  Future<void>? operation;
+  bool dispatched = false;
 }

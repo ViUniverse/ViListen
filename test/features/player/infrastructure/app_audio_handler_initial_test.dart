@@ -137,8 +137,8 @@ void main() {
   test('preserves UI and system provenance on the real handler', () async {
     final PlaybackGateway gateway = UiPlaybackGatewayAdapter(handler);
 
-    await expectLater(gateway.play(), _commandFailure('play'));
-    await expectLater(handler.play(), _commandFailure('play'));
+    await expectLater(gateway.play(), _noCurrentItemFailure('play'));
+    await expectLater(handler.play(), _noCurrentItemFailure('play'));
 
     expect(observedCommands, [
       (command: 'play', source: CommandSource.ui),
@@ -154,7 +154,10 @@ void main() {
     );
     addTearDown(failingObserverHandler.dispose);
 
-    await expectLater(failingObserverHandler.play(), _commandFailure('play'));
+    await expectLater(
+      failingObserverHandler.play(),
+      _noCurrentItemFailure('play'),
+    );
   });
 
   test('dispose is idempotent and closes owned resources once', () async {
@@ -171,13 +174,13 @@ void main() {
   });
 }
 
-Matcher _commandFailure(String command) => throwsA(
+Matcher _noCurrentItemFailure(String command) => throwsA(
   isA<PlayerCommandFailure>()
-      .having((failure) => failure.code, 'code', 'commandUnavailable')
+      .having((failure) => failure.code, 'code', 'noCurrentItem')
       .having((failure) => failure.command, 'command', command)
       .having(
         (failure) => failure.message,
         'message',
-        'Playback command is unavailable.',
+        'Playback command requires a current item.',
       ),
 );
