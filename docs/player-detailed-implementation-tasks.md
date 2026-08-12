@@ -1400,7 +1400,7 @@ flutter analyze
   - Snapshot confirmation.
   - Current item/index vẫn nhất quán.
 
-### PLR-077 — Remote callbacks parity `[CODE]` `[UNIT]` `[INTEGRATION]`
+### PLR-077 — Remote callbacks parity `[CODE]` `[UNIT]`
 
 - Phụ thuộc: PLR-015, PLR-061, PLR-069 đến PLR-076.
 - Files:
@@ -1416,6 +1416,12 @@ flutter analyze
   - Callback UI và OS hội tụ một handler operation.
   - Cubit tạo sau remote command nhận latest snapshot.
   - Remote Stop được bổ sung trong PLR-086 sau khi Stop transaction tồn tại.
+- Phạm vi nghiệm thu:
+  - PLR-077 chỉ nghiệm thu unit/parity ở Dart level; không claim platform
+    integration khi chưa có `AudioService.init` và production composition root.
+  - Integration qua plugin/platform channel được defer sau PLR-089/090; proof
+    load/play bằng production adapter và audio engine thật thuộc PLR-141,
+    platform/device matrix thuộc các task Phase 10–11 tương ứng.
 
 ## 11. Phase 7 — Error, Retry, interruption, Stop và cleanup
 
