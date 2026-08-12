@@ -89,6 +89,8 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   PlaybackSnapshot _lastSystemPublishedSnapshot = PlaybackSnapshot.idle;
   List<int> _effectiveSequence = const <int>[];
   List<int>? _pendingEffectiveSequence;
+  LoadGeneration? _pendingEffectiveSequenceGeneration;
+  int? _pendingEffectiveSequenceEpoch;
   ActivePlaybackContext? _active;
   PendingLoadContext? _pending;
   _RestoreGraphContext? _restoring;
@@ -108,6 +110,13 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   _RepeatFlight? _queuedRepeatFlight;
   LoadGeneration? _lastAppliedRepeatGeneration;
   int? _lastAppliedRepeatRevision;
+  bool _desiredShuffleEnabled = PlaybackSnapshot.idle.shuffleEnabled;
+  bool _lastConfirmedShuffleEnabled = PlaybackSnapshot.idle.shuffleEnabled;
+  int _desiredShuffleRevision = 0;
+  _ShuffleFlight? _shuffleFlight;
+  _ShuffleFlight? _queuedShuffleFlight;
+  _ShuffleSequenceCandidate? _pendingShuffleCandidate;
+  int _effectiveSequenceEpoch = 0;
   int _nextSeekConfirmationSequence = 0;
   _SeekConfirmation? _pendingSeekConfirmation;
   int _nextPlayPauseSequence = 0;
@@ -209,6 +218,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     if (_routeToCurrentLoad((events) => events.onCurrentIndex(currentIndex))) {
       return;
     }
+    if (_shuffleFlight != null) {
+      return;
+    }
     final effectiveIndex = _toEffectiveIndex(currentIndex);
     _reduceAndPublish(() => _snapshotReducer.onCurrentIndex(effectiveIndex));
   }
@@ -217,6 +229,8 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     if (_disposed) {
       return;
     }
+
+    final eventEpoch = ++_effectiveSequenceEpoch;
 
     final restoring = _restoring;
     if (restoring != null) {
@@ -227,9 +241,73 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     }
 
     final pending = _pending;
+    final shuffleFlight = _shuffleFlight;
+    if (shuffleFlight != null) {
+      final pendingShuffle =
+          pending != null &&
+          shuffleFlight.generation == pending.generation &&
+          shuffleFlight.revision == _desiredShuffleRevision &&
+          shuffleFlight.enabled == _desiredShuffleEnabled;
+      final logicalQueue =
+          pending?.targetQueue ??
+          _active?.logicalQueue ??
+          _snapshotReducer.latest.queue;
+
+      if (pendingShuffle &&
+          shuffleFlight.dispatched &&
+          eventEpoch > shuffleFlight.sequenceEpochAtDispatch &&
+          _isShuffleSequenceValid(
+            sequence,
+            queueLength: logicalQueue.length,
+            enabled: shuffleFlight.enabled,
+          )) {
+        shuffleFlight.sequenceCandidate = _ShuffleSequenceCandidate(
+          sequence: sequence,
+          revision: shuffleFlight.revision,
+          generation: shuffleFlight.generation,
+          eventEpoch: eventEpoch,
+        );
+        if (!shuffleFlight.sequenceConfirmation.isCompleted) {
+          shuffleFlight.sequenceConfirmation.complete();
+        }
+        _tryCommitShuffleFlight(shuffleFlight);
+        return;
+      }
+
+      if (!shuffleFlight.dispatched ||
+          shuffleFlight.revision != _desiredShuffleRevision ||
+          (shuffleFlight.generation != null &&
+              shuffleFlight.generation != pending?.generation) ||
+          eventEpoch <= shuffleFlight.sequenceEpochAtDispatch) {
+        return;
+      }
+
+      if (!_isShuffleSequenceValid(
+        sequence,
+        queueLength: logicalQueue.length,
+        enabled: shuffleFlight.enabled,
+      )) {
+        return;
+      }
+
+      shuffleFlight.sequenceCandidate = _ShuffleSequenceCandidate(
+        sequence: sequence,
+        revision: shuffleFlight.revision,
+        generation: shuffleFlight.generation,
+        eventEpoch: eventEpoch,
+      );
+      if (!shuffleFlight.sequenceConfirmation.isCompleted) {
+        shuffleFlight.sequenceConfirmation.complete();
+      }
+      _tryCommitShuffleFlight(shuffleFlight);
+      return;
+    }
+
     if (pending != null) {
       if (_commandCoordinator.isCurrent(pending.generation)) {
         _pendingEffectiveSequence = List<int>.unmodifiable(sequence);
+        _pendingEffectiveSequenceGeneration = pending.generation;
+        _pendingEffectiveSequenceEpoch = eventEpoch;
       }
       return;
     }
@@ -366,6 +444,42 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onShuffleEnabled(bool enabled) {
+    if (_disposed) {
+      return;
+    }
+
+    final flight = _shuffleFlight;
+    final pending = _currentPendingLoad();
+    if (flight != null) {
+      if (!flight.dispatched ||
+          flight.revision != _desiredShuffleRevision ||
+          flight.enabled != _desiredShuffleEnabled ||
+          flight.enabled != enabled) {
+        return;
+      }
+      if (pending != null && flight.generation != pending.generation) {
+        return;
+      }
+
+      _lastConfirmedShuffleEnabled = enabled;
+      flight.modeConfirmed = true;
+      if (!flight.modeConfirmation.isCompleted) {
+        flight.modeConfirmation.complete();
+      }
+
+      if (pending != null) {
+        pending.engineEvents.onShuffleEnabled(enabled);
+      } else {
+        _tryCommitShuffleFlight(flight);
+      }
+      return;
+    }
+
+    if (_desiredShuffleRevision > 0 && enabled != _desiredShuffleEnabled) {
+      return;
+    }
+
+    _lastConfirmedShuffleEnabled = enabled;
     if (_routeToCurrentLoad((events) => events.onShuffleEnabled(enabled))) {
       return;
     }
@@ -646,6 +760,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     // platform-side invalidation before the new graph transaction starts.
     _playPauseIntent = null;
     _pendingSeekConfirmation = null;
+    _invalidateActiveShuffleFlight();
 
     await _commandCoordinator.load((generation) async {
       if (_disposed) {
@@ -661,6 +776,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       );
       _pending = pending;
       _pendingEffectiveSequence = null;
+      _pendingEffectiveSequenceGeneration = null;
+      _pendingEffectiveSequenceEpoch = null;
+      _pendingShuffleCandidate = null;
 
       // Keep the active tuple outward during replacement. For an initial load
       // the reducer's canonical tuple is already empty. Pending projections
@@ -697,6 +815,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
         await _preparePendingSpeed(pending, flight);
         await _preparePendingRepeat(pending, flight);
+        await _preparePendingShuffle(pending, flight);
 
         if (_disposed ||
             !identical(_pending, pending) ||
@@ -720,12 +839,16 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
   void _commitPendingLoad(PendingLoadContext pending) {
     final events = pending.engineEvents;
-    final effectiveSequence = _validEffectiveSequence(
-      _pendingEffectiveSequence,
-      pending.targetQueue.length,
-    );
+    final pendingSequence =
+        _pendingEffectiveSequenceGeneration == pending.generation &&
+            _pendingEffectiveSequenceEpoch != null &&
+            _pendingEffectiveSequenceEpoch! <= _effectiveSequenceEpoch
+        ? _pendingEffectiveSequence
+        : null;
     final committedSequence =
-        effectiveSequence ?? _identitySequence(pending.targetQueue.length);
+        _committedShuffleSequence(pending) ??
+        _validEffectiveSequence(pendingSequence, pending.targetQueue.length) ??
+        _identitySequence(pending.targetQueue.length);
     final effectiveQueue = _effectiveQueue(
       pending.targetQueue,
       committedSequence,
@@ -780,7 +903,20 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       );
       _snapshotReducer.onLoopMode(events.loopMode!);
     }
-    if (events.hasShuffleEnabled) {
+    if (_desiredShuffleRevision > 0) {
+      final shufflePrepared = _pendingShuffleCandidate;
+      if (!_isPendingShuffleCandidateValid(
+            shufflePrepared,
+            pending,
+            committedSequence,
+          ) ||
+          _lastConfirmedShuffleEnabled != _desiredShuffleEnabled) {
+        throw StateError(
+          'Pending shuffle mode and effective sequence were not confirmed.',
+        );
+      }
+      _snapshotReducer.onShuffleEnabled(_desiredShuffleEnabled);
+    } else if (events.hasShuffleEnabled) {
       _snapshotReducer.onShuffleEnabled(events.shuffleEnabled!);
     }
 
@@ -789,8 +925,22 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final committed = _snapshotReducer.onPlayerState(
       just_audio.PlayerState(false, just_audio.ProcessingState.ready),
     );
+    final committedShuffleCandidate = _pendingShuffleCandidate;
+    final committedShuffleFlight = _shuffleFlight;
+    if (committedShuffleFlight != null &&
+        committedShuffleFlight.generation == pending.generation &&
+        identical(
+          committedShuffleFlight.sequenceCandidate,
+          committedShuffleCandidate,
+        )) {
+      committedShuffleFlight.committed = true;
+    }
+
     _pending = null;
     _pendingEffectiveSequence = null;
+    _pendingEffectiveSequenceGeneration = null;
+    _pendingEffectiveSequenceEpoch = null;
+    _pendingShuffleCandidate = null;
     _effectiveSequence = committedSequence;
     _active = ActivePlaybackContext(
       logicalQueue: pending.targetQueue,
@@ -801,6 +951,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     );
 
     _routeImmediate(committed);
+    _maybeFinalizeShuffleFlight(_shuffleFlight);
   }
 
   void _startAutoplay(LoadGeneration generation) {
@@ -845,6 +996,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       flight.completeInterrupt();
       _invalidateSpeedFlightForGeneration(flight.generation);
       _invalidateRepeatFlightForGeneration(flight.generation);
+      _invalidateShuffleFlightForGeneration(flight.generation);
     }
   }
 
@@ -1146,6 +1298,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   void _prepareNavigation() {
     _playPauseIntent = null;
     _pendingSeekConfirmation = null;
+    _invalidateActiveShuffleFlight();
   }
 
   int _activeLogicalIndex(
@@ -1319,6 +1472,8 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
     _pending = null;
     _pendingEffectiveSequence = null;
+    _pendingEffectiveSequenceGeneration = null;
+    _pendingEffectiveSequenceEpoch = null;
   }
 
   Future<void> _runNavigationTransaction({
@@ -1599,6 +1754,474 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
         return;
       }
     }
+  }
+
+  Future<void> _preparePendingShuffle(
+    PendingLoadContext pending,
+    _LoadFlight loadFlight,
+  ) async {
+    if (_desiredShuffleRevision == 0) {
+      return;
+    }
+
+    while (!_disposed &&
+        identical(_pending, pending) &&
+        _commandCoordinator.isCurrent(pending.generation)) {
+      final desiredEnabled = _desiredShuffleEnabled;
+      final desiredRevision = _desiredShuffleRevision;
+      final prepared = _pendingShuffleCandidate;
+      if (_lastConfirmedShuffleEnabled == desiredEnabled &&
+          _isPendingShuffleCandidateValid(
+            prepared,
+            pending,
+            prepared?.sequence,
+          ) &&
+          prepared?.revision == desiredRevision) {
+        return;
+      }
+
+      final flight = _enqueueShuffleFlight(
+        enabled: desiredEnabled,
+        revision: desiredRevision,
+        generation: pending.generation,
+        anchorItem: _latestSnapshot.currentItem,
+      );
+      try {
+        await Future.any<void>([flight.future, loadFlight.interrupted]);
+      } catch (_) {
+        if (desiredRevision != _desiredShuffleRevision ||
+            desiredEnabled != _desiredShuffleEnabled) {
+          continue;
+        }
+        rethrow;
+      }
+      if (loadFlight.wasInterrupted) {
+        return;
+      }
+
+      if (!flight.modeConfirmed) {
+        await Future.any<void>([
+          flight.modeConfirmation.future,
+          loadFlight.interrupted,
+        ]);
+        if (loadFlight.wasInterrupted) {
+          return;
+        }
+      }
+
+      if (flight.sequenceCandidate == null) {
+        await Future.any<void>([
+          flight.sequenceConfirmation.future,
+          loadFlight.interrupted,
+        ]);
+        if (loadFlight.wasInterrupted) {
+          return;
+        }
+      }
+
+      final candidate = flight.sequenceCandidate;
+      if (desiredRevision == _desiredShuffleRevision &&
+          desiredEnabled == _desiredShuffleEnabled &&
+          flight.modeConfirmed &&
+          _lastConfirmedShuffleEnabled == desiredEnabled &&
+          _isPendingShuffleCandidateValid(
+            candidate,
+            pending,
+            candidate?.sequence,
+          ) &&
+          _isShuffleCandidateAfterDispatch(candidate, flight)) {
+        _pendingShuffleCandidate = candidate;
+        return;
+      }
+    }
+  }
+
+  List<int>? _committedShuffleSequence(PendingLoadContext pending) {
+    if (_desiredShuffleRevision == 0) {
+      return null;
+    }
+
+    final candidate = _pendingShuffleCandidate;
+    if (!_isPendingShuffleCandidateValid(
+          candidate,
+          pending,
+          candidate?.sequence,
+        ) ||
+        !_isShuffleCandidateAfterDispatch(candidate, _shuffleFlight)) {
+      return null;
+    }
+    return candidate!.sequence;
+  }
+
+  bool _isPendingShuffleCandidateValid(
+    _ShuffleSequenceCandidate? candidate,
+    PendingLoadContext pending,
+    List<int>? sequence,
+  ) {
+    if (candidate == null ||
+        sequence == null ||
+        candidate.generation != pending.generation ||
+        candidate.revision != _desiredShuffleRevision ||
+        !_isShuffleCandidateAfterDispatch(candidate, _shuffleFlight) ||
+        !_isShuffleSequenceValid(
+          sequence,
+          queueLength: pending.targetQueue.length,
+          enabled: _desiredShuffleEnabled,
+        )) {
+      return false;
+    }
+    return true;
+  }
+
+  bool _isShuffleCandidateAfterDispatch(
+    _ShuffleSequenceCandidate? candidate,
+    _ShuffleFlight? flight,
+  ) {
+    return candidate != null &&
+        flight != null &&
+        candidate.eventEpoch > flight.sequenceEpochAtDispatch;
+  }
+
+  bool _isShuffleSequenceValid(
+    Iterable<int> sequence, {
+    required int queueLength,
+    required bool enabled,
+  }) {
+    final indexes = _validEffectiveSequence(sequence, queueLength);
+    if (indexes == null) {
+      return false;
+    }
+    if (enabled) {
+      return true;
+    }
+    return indexes.length == _identitySequence(queueLength).length &&
+        indexes.every((index) => index == indexes.indexOf(index));
+  }
+
+  void _tryCommitShuffleFlight(_ShuffleFlight flight) {
+    if (_disposed ||
+        !identical(_shuffleFlight, flight) ||
+        flight.superseded ||
+        flight.committed ||
+        !flight.modeConfirmed ||
+        flight.sequenceCandidate == null ||
+        flight.revision != _desiredShuffleRevision ||
+        flight.enabled != _desiredShuffleEnabled) {
+      return;
+    }
+
+    final pending = _currentPendingLoad();
+    if (pending != null) {
+      if (flight.generation != pending.generation) {
+        return;
+      }
+      return;
+    }
+    if (flight.generation != null) {
+      return;
+    }
+
+    final active = _active;
+    final logicalQueue = active?.logicalQueue ?? _snapshotReducer.latest.queue;
+    final candidate = flight.sequenceCandidate!;
+    if (!_isShuffleSequenceValid(
+      candidate.sequence,
+      queueLength: logicalQueue.length,
+      enabled: flight.enabled,
+    )) {
+      return;
+    }
+
+    final effectiveQueue = _effectiveQueue(logicalQueue, candidate.sequence);
+    if (effectiveQueue == null) {
+      return;
+    }
+
+    final anchorItem = flight.anchorItem ?? _snapshotReducer.latest.currentItem;
+    final logicalIndex = anchorItem == null
+        ? null
+        : logicalQueue.indexOf(anchorItem);
+    final effectiveIndex = _toEffectiveIndex(
+      logicalIndex,
+      sequence: candidate.sequence,
+      queueLength: logicalQueue.length,
+    );
+
+    _snapshotReducer.onShuffleEnabled(flight.enabled);
+    final committed = _snapshotReducer.commitQueue(
+      effectiveQueue,
+      currentIndex: effectiveIndex,
+    );
+    _effectiveSequence = candidate.sequence;
+    _updateActiveQueue(effectiveQueue, committed.currentIndex);
+    flight.committed = true;
+    _routeImmediate(committed);
+    _maybeFinalizeShuffleFlight(flight);
+  }
+
+  _ShuffleFlight _enqueueShuffleFlight({
+    required bool enabled,
+    required int revision,
+    required LoadGeneration? generation,
+    required PlayerItem? anchorItem,
+  }) {
+    final current = _shuffleFlight;
+    if (current != null &&
+        current.enabled == enabled &&
+        current.revision == revision &&
+        current.generation == generation) {
+      return current;
+    }
+    if (current == null) {
+      final flight = _ShuffleFlight(
+        enabled: enabled,
+        revision: revision,
+        generation: generation,
+        anchorItem: anchorItem,
+        sequenceEpochAtDispatch: _effectiveSequenceEpoch,
+      );
+      _shuffleFlight = flight;
+      _dispatchShuffleFlight(flight);
+      return flight;
+    }
+
+    final queued = _queuedShuffleFlight;
+    if (queued != null &&
+        queued.enabled == enabled &&
+        queued.generation == generation) {
+      return queued;
+    }
+
+    if (queued != null) {
+      _supersedeShuffleFlight(queued);
+    }
+
+    final next = _ShuffleFlight(
+      enabled: enabled,
+      revision: revision,
+      generation: generation,
+      anchorItem: anchorItem,
+      sequenceEpochAtDispatch: _effectiveSequenceEpoch,
+    );
+    _queuedShuffleFlight = next;
+    if (current.platformCompleted) {
+      _dispatchQueuedShuffleFlight();
+    }
+    return next;
+  }
+
+  void _dispatchShuffleFlight(_ShuffleFlight flight) {
+    if (_disposed || flight.dispatched || flight.superseded) {
+      return;
+    }
+
+    flight.dispatched = true;
+    flight.sequenceEpochAtDispatch = _effectiveSequenceEpoch;
+    if (flight.generation != null &&
+        _pending?.generation == flight.generation) {
+      _pendingEffectiveSequence = null;
+      _pendingEffectiveSequenceGeneration = null;
+      _pendingEffectiveSequenceEpoch = null;
+    }
+    Future<void> operation;
+    try {
+      operation = _engine.setShuffleEnabled(flight.enabled);
+    } catch (error, stackTrace) {
+      _finishShuffleFlightWithError(flight, error, stackTrace);
+      return;
+    }
+
+    unawaited(
+      operation.then<void>(
+        (_) => _finishShuffleFlight(flight),
+        onError: (Object error, StackTrace stackTrace) {
+          _finishShuffleFlightWithError(flight, error, stackTrace);
+        },
+      ),
+    );
+  }
+
+  void _dispatchQueuedShuffleFlight() {
+    final current = _shuffleFlight;
+    final queued = _queuedShuffleFlight;
+    if (current == null || queued == null || !current.platformCompleted) {
+      return;
+    }
+
+    _queuedShuffleFlight = null;
+    _shuffleFlight = queued;
+    _dispatchShuffleFlight(queued);
+  }
+
+  void _finishShuffleFlight(_ShuffleFlight flight) {
+    flight.platformCompleted = true;
+    flight.completeSuccess();
+
+    if (!identical(_shuffleFlight, flight)) {
+      return;
+    }
+
+    if (_queuedShuffleFlight != null) {
+      if (!flight.modeConfirmation.isCompleted) {
+        flight.modeConfirmation.complete();
+      }
+      if (!flight.sequenceConfirmation.isCompleted) {
+        flight.sequenceConfirmation.complete();
+      }
+      _dispatchQueuedShuffleFlight();
+      return;
+    }
+    _maybeFinalizeShuffleFlight(flight);
+  }
+
+  void _finishShuffleFlightWithError(
+    _ShuffleFlight flight,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    flight.platformCompleted = true;
+    flight.modeConfirmed = false;
+    flight.sequenceCandidate = null;
+    if (_pending?.generation == flight.generation) {
+      _pendingShuffleCandidate = null;
+    }
+    flight.completeError(error, stackTrace);
+
+    if (!identical(_shuffleFlight, flight)) {
+      return;
+    }
+
+    if (_queuedShuffleFlight != null) {
+      if (!flight.modeConfirmation.isCompleted) {
+        flight.modeConfirmation.complete();
+      }
+      if (!flight.sequenceConfirmation.isCompleted) {
+        flight.sequenceConfirmation.complete();
+      }
+      _dispatchQueuedShuffleFlight();
+      return;
+    }
+
+    _shuffleFlight = null;
+    if (_desiredShuffleRevision == flight.revision &&
+        _desiredShuffleEnabled == flight.enabled) {
+      _desiredShuffleEnabled = _lastConfirmedShuffleEnabled;
+      _desiredShuffleRevision++;
+    }
+  }
+
+  void _maybeFinalizeShuffleFlight(_ShuffleFlight? flight) {
+    if (flight == null || !identical(_shuffleFlight, flight)) {
+      return;
+    }
+    if (flight.generation != null && _pending != null) {
+      return;
+    }
+    if (flight.platformCompleted &&
+        flight.committed &&
+        _queuedShuffleFlight == null) {
+      _shuffleFlight = null;
+    }
+  }
+
+  void _invalidateActiveShuffleFlight() {
+    final current = _shuffleFlight;
+    if (current == null || current.generation != null) {
+      return;
+    }
+    _supersedeShuffleFlight(current);
+    _shuffleFlight = null;
+    final queued = _queuedShuffleFlight;
+    if (queued != null && queued.generation == null) {
+      _supersedeShuffleFlight(queued);
+      _queuedShuffleFlight = null;
+    }
+  }
+
+  void _invalidateShuffleFlightForGeneration(LoadGeneration? generation) {
+    if (generation == null) {
+      return;
+    }
+
+    final current = _shuffleFlight;
+    if (current != null && current.generation == generation) {
+      _supersedeShuffleFlight(current);
+      _shuffleFlight = null;
+      final queued = _queuedShuffleFlight;
+      if (queued != null) {
+        _supersedeShuffleFlight(queued);
+        _queuedShuffleFlight = null;
+      }
+      _pendingShuffleCandidate = null;
+      if (_pending?.generation == generation) {
+        _pendingEffectiveSequence = null;
+        _pendingEffectiveSequenceGeneration = null;
+        _pendingEffectiveSequenceEpoch = null;
+      }
+      return;
+    }
+
+    final queued = _queuedShuffleFlight;
+    if (queued != null && queued.generation == generation) {
+      _supersedeShuffleFlight(queued);
+      _queuedShuffleFlight = null;
+      if (_pending?.generation == generation) {
+        _pendingEffectiveSequence = null;
+        _pendingEffectiveSequenceGeneration = null;
+        _pendingEffectiveSequenceEpoch = null;
+      }
+    }
+  }
+
+  void _supersedeShuffleFlight(_ShuffleFlight flight) {
+    flight.superseded = true;
+    flight.modeConfirmed = false;
+    flight.sequenceCandidate = null;
+    flight.completeSuccess();
+    if (!flight.modeConfirmation.isCompleted) {
+      flight.modeConfirmation.complete();
+    }
+    if (!flight.sequenceConfirmation.isCompleted) {
+      flight.sequenceConfirmation.complete();
+    }
+  }
+
+  Future<void> _submitShuffle(bool enabled, {LoadGeneration? generation}) {
+    final existing = _matchingShuffleFlight(enabled, generation);
+    if (existing != null &&
+        existing.revision == _desiredShuffleRevision &&
+        _desiredShuffleEnabled == enabled) {
+      return existing.future;
+    }
+
+    _desiredShuffleEnabled = enabled;
+    final revision = ++_desiredShuffleRevision;
+    return _enqueueShuffleFlight(
+      enabled: enabled,
+      revision: revision,
+      generation: generation,
+      anchorItem: _latestSnapshot.currentItem,
+    ).future;
+  }
+
+  _ShuffleFlight? _matchingShuffleFlight(
+    bool enabled,
+    LoadGeneration? generation,
+  ) {
+    final current = _shuffleFlight;
+    if (current != null &&
+        current.enabled == enabled &&
+        current.generation == generation) {
+      return current;
+    }
+
+    final queued = _queuedShuffleFlight;
+    if (queued != null &&
+        queued.enabled == enabled &&
+        queued.generation == generation) {
+      return queued;
+    }
+    return null;
   }
 
   Future<void> _submitSpeed(double speed, {LoadGeneration? generation}) {
@@ -2064,8 +2687,27 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   @override
-  Future<void> handleSetShuffleEnabled(bool enabled, CommandSource source) =>
-      _commandNotReady('setShuffleEnabled', source);
+  Future<void> handleSetShuffleEnabled(bool enabled, CommandSource source) {
+    _notifyCommandObserver('setShuffleEnabled', source);
+
+    final pending = _currentPendingLoad();
+    if (pending != null) {
+      return _submitShuffle(enabled, generation: pending.generation);
+    }
+
+    final snapshot = _latestSnapshot;
+    if (snapshot.failure != null ||
+        snapshot.processingState == PlaybackProcessingState.error ||
+        snapshot.processingState == PlaybackProcessingState.loading) {
+      return _commandNotReady('setShuffleEnabled', source, notify: false);
+    }
+
+    if (snapshot.currentItem == null || snapshot.currentIndex == null) {
+      return _commandNoCurrentItem('setShuffleEnabled', source, notify: false);
+    }
+
+    return _submitShuffle(enabled);
+  }
 
   @override
   Future<void> handleRetry(CommandSource source) =>
@@ -2367,6 +3009,60 @@ final class _RepeatFlight {
   bool dispatched = false;
   bool platformCompleted = false;
   bool confirmed = false;
+  bool superseded = false;
+
+  Future<void> get future => _completer.future;
+
+  void completeSuccess() {
+    if (!_completer.isCompleted) {
+      _completer.complete();
+    }
+  }
+
+  void completeError(Object error, StackTrace stackTrace) {
+    if (!_completer.isCompleted) {
+      _completer.completeError(error, stackTrace);
+    }
+  }
+}
+
+final class _ShuffleSequenceCandidate {
+  _ShuffleSequenceCandidate({
+    required Iterable<int> sequence,
+    required this.revision,
+    required this.generation,
+    required this.eventEpoch,
+  }) : sequence = List<int>.unmodifiable(sequence);
+
+  final List<int> sequence;
+  final int revision;
+  final LoadGeneration? generation;
+  final int eventEpoch;
+}
+
+final class _ShuffleFlight {
+  _ShuffleFlight({
+    required this.enabled,
+    required this.revision,
+    required this.generation,
+    required this.anchorItem,
+    required this.sequenceEpochAtDispatch,
+  });
+
+  final bool enabled;
+  final int revision;
+  final LoadGeneration? generation;
+  final PlayerItem? anchorItem;
+  final Completer<void> _completer = Completer<void>();
+  final Completer<void> modeConfirmation = Completer<void>();
+  final Completer<void> sequenceConfirmation = Completer<void>();
+  int sequenceEpochAtDispatch;
+  _ShuffleSequenceCandidate? sequenceCandidate;
+
+  bool dispatched = false;
+  bool platformCompleted = false;
+  bool modeConfirmed = false;
+  bool committed = false;
   bool superseded = false;
 
   Future<void> get future => _completer.future;
