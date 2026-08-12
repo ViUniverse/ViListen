@@ -1259,10 +1259,22 @@ flutter analyze
   - Publish đúng output khi diff yêu cầu.
   - Queue/index/item cùng nguồn domain.
   - Artwork failure không làm playback failure.
+  - AppAudioHandler tạo và sở hữu một PlayerClock, rồi inject clock đó vào
+    PlayerPositionProjector và SystemTimelineProjector; projector chỉ hủy
+    subscription của chính nó, không dispose clock.
+  - Route position candidate dưới dạng PlaybackSnapshot hoàn chỉnh vào
+    PlayerPositionProjector; route load/lifecycle/immediate snapshot qua đường
+    immediate và đưa projection UI trở lại domain snapshot stream của handler.
 - Test:
   - Item đổi cập nhật media item đúng một lần.
   - Queue đổi cập nhật queue đúng một lần.
   - Play/pause/buffering chỉ cập nhật playback state.
+  - Position tick cập nhật UI snapshot theo cadence nhưng không gọi
+    mediaItem.add hoặc queue.add.
+  - Completed/error/buffering và các immediate snapshot xuất hiện không cần
+    chờ cadence.
+  - Handler dispose hai projector trước, sau đó dispose PlayerClock đúng một
+    lần; projector dispose riêng lẻ không làm clock bị dispose.
 
 ## 10. Phase 6 — Commands, queue navigation và remote callbacks
 
