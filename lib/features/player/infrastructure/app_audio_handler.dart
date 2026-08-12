@@ -20,8 +20,11 @@ import 'package:vi_listen/features/player/infrastructure/playback_publication_di
 import 'package:vi_listen/features/player/infrastructure/playback_snapshot_reducer.dart';
 import 'package:vi_listen/features/player/infrastructure/periodic_player_clock.dart';
 import 'package:vi_listen/features/player/infrastructure/player_clock.dart';
+import 'package:vi_listen/features/player/infrastructure/player_item_mapper.dart';
 import 'package:vi_listen/features/player/infrastructure/player_policies.dart';
+import 'package:vi_listen/features/player/infrastructure/player_position_projector.dart';
 import 'package:vi_listen/features/player/infrastructure/system_playback_state_mapper.dart';
+import 'package:vi_listen/features/player/infrastructure/system_timeline_projector.dart';
 import 'package:vi_listen/features/player/infrastructure/ui_playback_command_target.dart';
 
 /// Observes command ingress without coupling the handler to a logging or
@@ -31,9 +34,8 @@ typedef PlaybackCommandObserver =
 
 /// Audio service owner and internal playback command target.
 ///
-/// PLR-060 establishes ownership and lifecycle seams. Engine stream events are
-/// reduced into domain snapshots here; commands and platform publications are
-/// layered on by the subsequent handler tasks.
+/// Engine stream events are reduced into complete domain snapshots. UI and OS
+/// publications are projected from those same snapshots.
 final class AppAudioHandler extends audio_service.BaseAudioHandler
     with audio_service.QueueHandler, audio_service.SeekHandler
     implements UiPlaybackCommandTarget {
@@ -56,6 +58,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
        _commandObserver = commandObserver,
        _commandCoordinator =
            commandCoordinator ?? PlaybackCommandCoordinator() {
+    _positionProjector = PlayerPositionProjector(clock: _clock);
+    _systemTimelineProjector = SystemTimelineProjector(clock: _clock);
+    _projectionSubscriptions
+      ..add(_positionProjector.projections.listen(_onUiProjection))
+      ..add(_systemTimelineProjector.projections.listen(_onSystemProjection));
     _bindEngineStreams();
   }
 
@@ -67,11 +74,16 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       StreamController<PlaybackSnapshot>.broadcast();
   final List<StreamSubscription<dynamic>> _subscriptions =
       <StreamSubscription<dynamic>>[];
+  final List<StreamSubscription<PlaybackSnapshot>> _projectionSubscriptions =
+      <StreamSubscription<PlaybackSnapshot>>[];
   final PlaybackSnapshotReducer _snapshotReducer = PlaybackSnapshotReducer();
   final SystemPlaybackStateMapper _systemPlaybackStateMapper =
       SystemPlaybackStateMapper();
+  late final PlayerPositionProjector _positionProjector;
+  late final SystemTimelineProjector _systemTimelineProjector;
 
   PlaybackSnapshot _latestSnapshot = PlaybackSnapshot.idle;
+  PlaybackSnapshot _lastSystemPublishedSnapshot = PlaybackSnapshot.idle;
   ActivePlaybackContext? _active;
   PendingLoadContext? _pending;
   _LoadFlight? _activeLoad;
@@ -134,9 +146,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       return;
     }
 
-    // Position is retained as the reducer's raw candidate. PLR-065/068 own
-    // cadence and will publish it through their respective projectors.
-    _snapshotReducer.onPosition(position);
+    final candidate = _snapshotReducer.onPosition(position);
+    _positionProjector.onPositionCandidate(candidate);
+    _systemTimelineProjector.onPositionCandidate(candidate);
   }
 
   void _onBufferedPosition(Duration bufferedPosition) {
@@ -214,14 +226,70 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       current: reduced,
     );
 
-    // Keep replay state in sync before handing the value to any subscriber.
-    _latestSnapshot = reduced;
     if (!diff.snapshotChanged) {
       return;
     }
 
-    _snapshotController.add(reduced);
+    _routeImmediate(reduced);
   }
+
+  void _routeImmediate(PlaybackSnapshot snapshot) {
+    if (_disposed) {
+      return;
+    }
+
+    _positionProjector.onImmediate(snapshot);
+    _systemTimelineProjector.onImmediate(snapshot);
+  }
+
+  void _onUiProjection(PlaybackSnapshot snapshot) {
+    if (_disposed) {
+      return;
+    }
+
+    final diff = PlaybackPublicationDiff.between(
+      previous: _latestSnapshot,
+      current: snapshot,
+    );
+    _latestSnapshot = snapshot;
+    if (diff.snapshotChanged) {
+      _snapshotController.add(snapshot);
+    }
+  }
+
+  void _onSystemProjection(PlaybackSnapshot snapshot) {
+    if (_disposed) {
+      return;
+    }
+
+    final diff = PlaybackPublicationDiff.between(
+      previous: _lastSystemPublishedSnapshot,
+      current: snapshot,
+    );
+    _lastSystemPublishedSnapshot = snapshot;
+    if (!diff.snapshotChanged) {
+      return;
+    }
+
+    if (diff.queueChanged) {
+      queue.add(_toMediaItems(snapshot.queue));
+    }
+    if (diff.mediaItemChanged) {
+      final currentItem = snapshot.currentItem;
+      mediaItem.add(
+        currentItem == null ? null : PlayerItemMapper.toMediaItem(currentItem),
+      );
+    }
+    if (diff.playbackStateChanged) {
+      playbackState.add(_systemPlaybackStateMapper.map(snapshot));
+    }
+  }
+
+  static List<audio_service.MediaItem> _toMediaItems(
+    Iterable<PlayerItem> items,
+  ) => List<audio_service.MediaItem>.unmodifiable(
+    items.map(PlayerItemMapper.toMediaItem),
+  );
 
   void _rememberActiveContext() {
     if (_active != null || _latestSnapshot.queue.isEmpty) {
@@ -361,18 +429,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       desiredPlaying: pending.autoplay,
     );
 
-    final diff = PlaybackPublicationDiff.between(
-      previous: _latestSnapshot,
-      current: committed,
-    );
-    _latestSnapshot = committed;
-
-    queue.add(pending.mediaItems);
-    mediaItem.add(pending.mediaItems[committed.currentIndex!]);
-    playbackState.add(_systemPlaybackStateMapper.map(committed));
-    if (diff.snapshotChanged) {
-      _snapshotController.add(committed);
-    }
+    _routeImmediate(committed);
   }
 
   void _startAutoplay(LoadGeneration generation) {
@@ -406,17 +463,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final paused = _snapshotReducer.onPlayerState(
       just_audio.PlayerState(false, just_audio.ProcessingState.ready),
     );
-    final diff = PlaybackPublicationDiff.between(
-      previous: _latestSnapshot,
-      current: paused,
-    );
-    _latestSnapshot = paused;
-    if (!diff.snapshotChanged) {
-      return;
-    }
-
-    playbackState.add(_systemPlaybackStateMapper.map(paused));
-    _snapshotController.add(paused);
+    _routeImmediate(paused);
   }
 
   Future<void> _interruptCurrentLoad() async {
@@ -532,6 +579,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final subscriptions = List<StreamSubscription<dynamic>>.from(
       _subscriptions,
     );
+    final projectionSubscriptions =
+        List<StreamSubscription<PlaybackSnapshot>>.from(
+          _projectionSubscriptions,
+        );
 
     try {
       await Future.wait<void>(
@@ -540,12 +591,29 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     } finally {
       _subscriptions.clear();
       try {
-        await _snapshotController.close();
+        await _positionProjector.dispose();
       } finally {
         try {
-          await _clock.dispose();
+          await _systemTimelineProjector.dispose();
         } finally {
-          await _engine.dispose();
+          try {
+            await Future.wait<void>(
+              projectionSubscriptions.map(
+                (subscription) => subscription.cancel(),
+              ),
+            );
+          } finally {
+            _projectionSubscriptions.clear();
+            try {
+              await _snapshotController.close();
+            } finally {
+              try {
+                await _clock.dispose();
+              } finally {
+                await _engine.dispose();
+              }
+            }
+          }
         }
       }
     }
