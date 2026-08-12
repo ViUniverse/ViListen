@@ -902,7 +902,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     }, interrupt: _interruptCurrentLoad);
   }
 
-  void _commitPendingLoad(PendingLoadContext pending) {
+  void _commitPendingLoad(
+    PendingLoadContext pending, {
+    Duration? positionOverride,
+    Duration? durationOverride,
+  }) {
     final events = pending.engineEvents;
     final pendingSequence =
         _pendingEffectiveSequenceGeneration == pending.generation &&
@@ -917,7 +921,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final effectiveQueue = _effectiveQueue(
       pending.targetQueue,
       committedSequence,
-    )!;
+    );
+    if (effectiveQueue == null) {
+      throw StateError('Pending effective queue is invalid.');
+    }
     final eventIndex = events.currentIndex;
     final logicalIndex =
         events.hasCurrentIndex &&
@@ -931,6 +938,33 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       sequence: committedSequence,
       queueLength: pending.targetQueue.length,
     );
+    if (currentIndex == null) {
+      throw StateError('Pending current index is invalid.');
+    }
+
+    final repeatPrepared =
+        _desiredRepeatRevision == 0 ||
+        (_lastAppliedRepeatGeneration == pending.generation &&
+            _lastAppliedRepeatRevision == _desiredRepeatRevision &&
+            _lastConfirmedRepeatMode == _desiredRepeatMode);
+    if (!repeatPrepared) {
+      throw StateError(
+        'Pending repeat mode was not confirmed for the current load.',
+      );
+    }
+    final shufflePrepared =
+        _desiredShuffleRevision == 0 ||
+        (_isPendingShuffleCandidateValid(
+              _pendingShuffleCandidate,
+              pending,
+              committedSequence,
+            ) &&
+            _lastConfirmedShuffleEnabled == _desiredShuffleEnabled);
+    if (!shufflePrepared) {
+      throw StateError(
+        'Pending shuffle mode and effective sequence were not confirmed.',
+      );
+    }
 
     _snapshotReducer.commitQueue(effectiveQueue, currentIndex: currentIndex);
     if (events.hasPosition) {
@@ -942,6 +976,14 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     if (events.hasDuration) {
       _snapshotReducer.onDuration(events.duration);
     }
+    // Retry restores a saved position before this commit. Its explicit engine
+    // seek result must win over any position observed while the source loaded.
+    if (durationOverride != null) {
+      _snapshotReducer.onDuration(durationOverride);
+    }
+    if (positionOverride != null) {
+      _snapshotReducer.onPosition(positionOverride);
+    }
     if (_desiredSpeedRevision > 0) {
       if (_lastConfirmedSpeed == _desiredSpeed) {
         _snapshotReducer.onSpeed(_desiredSpeed);
@@ -950,15 +992,6 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       _snapshotReducer.onSpeed(events.speed!);
     }
     if (_desiredRepeatRevision > 0) {
-      final repeatPrepared =
-          _lastAppliedRepeatGeneration == pending.generation &&
-          _lastAppliedRepeatRevision == _desiredRepeatRevision &&
-          _lastConfirmedRepeatMode == _desiredRepeatMode;
-      if (!repeatPrepared) {
-        throw StateError(
-          'Pending repeat mode was not confirmed for the current load.',
-        );
-      }
       _snapshotReducer.onLoopMode(
         PlaybackMappers.toEngineRepeat(_desiredRepeatMode),
       );
@@ -969,17 +1002,6 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       _snapshotReducer.onLoopMode(events.loopMode!);
     }
     if (_desiredShuffleRevision > 0) {
-      final shufflePrepared = _pendingShuffleCandidate;
-      if (!_isPendingShuffleCandidateValid(
-            shufflePrepared,
-            pending,
-            committedSequence,
-          ) ||
-          _lastConfirmedShuffleEnabled != _desiredShuffleEnabled) {
-        throw StateError(
-          'Pending shuffle mode and effective sequence were not confirmed.',
-        );
-      }
       _snapshotReducer.onShuffleEnabled(_desiredShuffleEnabled);
     } else if (events.hasShuffleEnabled) {
       _snapshotReducer.onShuffleEnabled(events.shuffleEnabled!);
@@ -1759,6 +1781,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       }
     }
 
+    // A real source navigation supersedes a recoverable failure target. Do
+    // not clear it for a boundary no-op or a typed rejection above.
+    _retryContext = null;
     _prepareNavigation();
     final sourceToken = _commandCoordinator.beginSourceNavigation();
 
@@ -2847,8 +2872,186 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   @override
-  Future<void> handleRetry(CommandSource source) =>
-      _commandNotReady('retry', source);
+  Future<void> handleRetry(CommandSource source) {
+    _notifyCommandObserver('retry', source);
+
+    final context = _retryContext;
+    final pending = _currentPendingLoad();
+    final isDuplicateRetry =
+        context != null && pending != null && identical(_retryContext, context);
+    final snapshot = _snapshotReducer.latest;
+    if (context == null ||
+        (!isDuplicateRetry &&
+            (snapshot.processingState != PlaybackProcessingState.error ||
+                snapshot.failure?.isRecoverable != true))) {
+      return _commandRetryUnavailable('retry', source, notify: false);
+    }
+
+    return _commandCoordinator.retry(
+      context,
+      (generation) => _runRetryTransaction(context, generation),
+      interrupt: _interruptCurrentLoad,
+    );
+  }
+
+  Future<void> _runRetryTransaction(
+    RetryContext context,
+    LoadGeneration generation,
+  ) async {
+    if (_disposed || !identical(_retryContext, context)) {
+      return;
+    }
+
+    _playPauseIntent = null;
+    _pendingSeekConfirmation = null;
+    _invalidateActiveShuffleFlight();
+    final pending = PendingLoadContext.fromItems(
+      items: context.targetQueue,
+      targetIndex: context.targetIndex,
+      autoplay: false,
+      generation: generation,
+    );
+    // The engine load is always prepare-only. This is the mutable intent that
+    // Play/Pause may update while retry work is pending.
+    pending.desiredPlaying = context.desiredPlaying;
+    _pending = pending;
+    _pendingEffectiveSequence = null;
+    _pendingEffectiveSequenceGeneration = null;
+    _pendingEffectiveSequenceEpoch = null;
+    _pendingShuffleCandidate = null;
+    _reduceAndPublish(_snapshotReducer.onLoadStarted);
+
+    final flight = _LoadFlight(generation: generation);
+    _activeLoad = flight;
+    try {
+      final engineLoad = _engine.load(
+        pending.sources,
+        initialIndex: context.targetIndex,
+      );
+      unawaited(
+        engineLoad.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+      );
+      await Future.any<void>([engineLoad, flight.interrupted]);
+      if (!_isCurrentRetryAttempt(context, pending, generation)) {
+        return;
+      }
+
+      await _preparePendingSpeed(pending, flight);
+      await _preparePendingRepeat(pending, flight);
+      await _preparePendingShuffle(pending, flight);
+      if (!_isCurrentRetryAttempt(context, pending, generation)) {
+        return;
+      }
+
+      final duration = pending.engineEvents.hasDuration
+          ? pending.engineEvents.duration ?? Duration.zero
+          : Duration.zero;
+      final restorePosition = duration > Duration.zero
+          ? PlaybackPositionPolicy.clampSeek(
+                  target: context.restorePosition,
+                  duration: duration,
+                ) ??
+                Duration.zero
+          : Duration.zero;
+      await _engine.seek(restorePosition, index: context.targetIndex);
+      if (!_isCurrentRetryAttempt(context, pending, generation)) {
+        return;
+      }
+
+      // Option commands can arrive while seek is pending. Stabilize their
+      // latest revisions before the no-await commit boundary.
+      await _preparePendingOptionsForCommit(context, pending, flight);
+      if (!_isCurrentRetryAttempt(context, pending, generation)) {
+        return;
+      }
+
+      _commitPendingLoad(
+        pending,
+        positionOverride: restorePosition,
+        durationOverride: duration,
+      );
+      if (!_commandCoordinator.isCurrent(generation)) {
+        return;
+      }
+      _retryContext = null;
+      if (pending.desiredPlaying) {
+        _startAutoplay(generation);
+      }
+    } catch (error, stackTrace) {
+      if (_isCurrentRetryAttempt(context, pending, generation)) {
+        _handleCurrentRetryFailure(
+          error,
+          pending: pending,
+          context: context,
+          generation: generation,
+        );
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+    } finally {
+      if (identical(_activeLoad, flight)) {
+        _activeLoad = null;
+      }
+    }
+  }
+
+  Future<void> _preparePendingOptionsForCommit(
+    RetryContext context,
+    PendingLoadContext pending,
+    _LoadFlight flight,
+  ) async {
+    while (_isCurrentRetryAttempt(context, pending, pending.generation)) {
+      final speedRevision = _desiredSpeedRevision;
+      final repeatRevision = _desiredRepeatRevision;
+      final shuffleRevision = _desiredShuffleRevision;
+      await _preparePendingSpeed(pending, flight);
+      await _preparePendingRepeat(pending, flight);
+      await _preparePendingShuffle(pending, flight);
+      if (speedRevision == _desiredSpeedRevision &&
+          repeatRevision == _desiredRepeatRevision &&
+          shuffleRevision == _desiredShuffleRevision) {
+        return;
+      }
+    }
+  }
+
+  bool _isCurrentRetryAttempt(
+    RetryContext context,
+    PendingLoadContext pending,
+    LoadGeneration generation,
+  ) =>
+      !_disposed &&
+      identical(_retryContext, context) &&
+      identical(_pending, pending) &&
+      _commandCoordinator.isCurrent(generation);
+
+  void _handleCurrentRetryFailure(
+    Object error, {
+    required PendingLoadContext pending,
+    required RetryContext context,
+    required LoadGeneration generation,
+  }) {
+    if (!_isCurrentRetryAttempt(context, pending, generation)) {
+      return;
+    }
+
+    final retry = RetryContext(
+      targetQueue: context.targetQueue,
+      targetIndex: context.targetIndex,
+      restorePosition: context.restorePosition,
+      desiredPlaying: pending.desiredPlaying,
+      failureGeneration: generation,
+      failureItemId: context.failureItemId,
+    );
+    _clearFailedPendingLoad(pending);
+    _publishFailure(
+      error,
+      context: _active == null
+          ? PlayerFailureContext.initialLoad
+          : PlayerFailureContext.replaceLoad,
+      itemId: context.failureItemId,
+      retryContext: retry,
+    );
+  }
 
   @override
   Future<void> play() => handlePlay(CommandSource.systemRemote);
@@ -2974,6 +3177,23 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
         code: 'noCurrentItem',
         message: 'Playback command requires a current item.',
         command: command,
+      ),
+    );
+  }
+
+  Future<void> _commandRetryUnavailable(
+    String command,
+    CommandSource source, {
+    bool notify = true,
+  }) {
+    if (notify) {
+      _notifyCommandObserver(command, source);
+    }
+    return Future<void>.error(
+      const PlayerCommandFailure(
+        code: 'retryUnavailable',
+        message: 'Retry is unavailable.',
+        command: 'retry',
       ),
     );
   }

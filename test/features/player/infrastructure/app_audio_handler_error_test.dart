@@ -303,7 +303,7 @@ void main() {
           isA<PlayerCommandFailure>().having(
             (failure) => failure.code,
             'code',
-            'commandUnavailable',
+            'retryUnavailable',
           ),
         ),
       );
