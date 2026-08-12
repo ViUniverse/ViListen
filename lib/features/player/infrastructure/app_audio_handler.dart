@@ -17,6 +17,7 @@ import 'package:vi_listen/features/player/infrastructure/load_generation_guard.d
 import 'package:vi_listen/features/player/infrastructure/playback_command_coordinator.dart';
 import 'package:vi_listen/features/player/infrastructure/playback_contexts.dart';
 import 'package:vi_listen/features/player/infrastructure/playback_mappers.dart';
+import 'package:vi_listen/features/player/infrastructure/playback_position_policy.dart';
 import 'package:vi_listen/features/player/infrastructure/playback_publication_diff.dart';
 import 'package:vi_listen/features/player/infrastructure/playback_snapshot_reducer.dart';
 import 'package:vi_listen/features/player/infrastructure/periodic_player_clock.dart';
@@ -89,6 +90,8 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   PendingLoadContext? _pending;
   _LoadFlight? _activeLoad;
   _PlayPauseIntent? _playPauseIntent;
+  int _nextSeekConfirmationSequence = 0;
+  _SeekConfirmation? _pendingSeekConfirmation;
   int _nextPlayPauseSequence = 0;
   Future<void>? _disposeFuture;
   bool _disposed = false;
@@ -151,6 +154,16 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     }
 
     final candidate = _snapshotReducer.onPosition(position);
+    final confirmation = _pendingSeekConfirmation;
+    if (confirmation != null &&
+        position == confirmation.target &&
+        _commandCoordinator.isSourceTokenCurrent(confirmation.sourceToken)) {
+      _pendingSeekConfirmation = null;
+      _positionProjector.onImmediate(candidate);
+      _systemTimelineProjector.onImmediate(candidate);
+      return;
+    }
+
     _positionProjector.onPositionCandidate(candidate);
     _systemTimelineProjector.onPositionCandidate(candidate);
   }
@@ -351,6 +364,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     // after validation succeeds. The coordinator performs the corresponding
     // platform-side invalidation before the new graph transaction starts.
     _playPauseIntent = null;
+    _pendingSeekConfirmation = null;
 
     await _commandCoordinator.load((generation) async {
       if (_disposed) {
@@ -707,12 +721,72 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       _commandNotReady('stop', source);
 
   @override
-  Future<void> handleSeek(Duration position, CommandSource source) =>
-      _commandNotReady('seek', source);
+  Future<void> handleSeek(Duration position, CommandSource source) => _runSeek(
+    command: 'seek',
+    source: source,
+    resolveTarget: (snapshot) => PlaybackPositionPolicy.clampSeek(
+      target: position,
+      duration: snapshot.duration,
+    ),
+  );
 
   @override
-  Future<void> handleSkipBy(Duration offset, CommandSource source) =>
-      _commandNotReady('skipBy', source);
+  Future<void> handleSkipBy(Duration offset, CommandSource source) => _runSeek(
+    command: 'skipBy',
+    source: source,
+    resolveTarget: (snapshot) => PlaybackPositionPolicy.skipTarget(
+      position: snapshot.position,
+      offset: offset,
+      duration: snapshot.duration,
+    ),
+  );
+
+  Future<void> _runSeek({
+    required String command,
+    required CommandSource source,
+    required Duration? Function(PlaybackSnapshot snapshot) resolveTarget,
+  }) {
+    _notifyCommandObserver(command, source);
+
+    // The reducer is the latest engine-confirmed accumulator. The UI-facing
+    // snapshot may intentionally lag behind it while position cadence is
+    // pending.
+    final snapshot = _snapshotReducer.latest;
+    if (_pending != null ||
+        snapshot.processingState == PlaybackProcessingState.loading ||
+        snapshot.processingState == PlaybackProcessingState.error ||
+        snapshot.failure != null) {
+      return _commandNotReady(command, source, notify: false);
+    }
+
+    if (snapshot.currentItem == null) {
+      return _commandNoCurrentItem(command, source, notify: false);
+    }
+
+    final target = resolveTarget(snapshot);
+    if (target == null) {
+      return _commandSeekUnavailable(command, source, notify: false);
+    }
+
+    final confirmation = _SeekConfirmation(
+      sequence: ++_nextSeekConfirmationSequence,
+      target: target,
+      sourceToken: _commandCoordinator.captureSourceToken(),
+    );
+    _pendingSeekConfirmation = confirmation;
+    return _seekEngineTarget(confirmation);
+  }
+
+  Future<void> _seekEngineTarget(_SeekConfirmation confirmation) async {
+    try {
+      await _engine.seek(confirmation.target);
+    } catch (error, stackTrace) {
+      if (identical(_pendingSeekConfirmation, confirmation)) {
+        _pendingSeekConfirmation = null;
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+  }
 
   @override
   Future<void> handleNext(CommandSource source) =>
@@ -868,6 +942,23 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     );
   }
 
+  Future<void> _commandSeekUnavailable(
+    String command,
+    CommandSource source, {
+    bool notify = true,
+  }) {
+    if (notify) {
+      _notifyCommandObserver(command, source);
+    }
+    return Future<void>.error(
+      PlayerCommandFailure(
+        code: 'seekUnavailableUnknownDuration',
+        message: 'Seeking is unavailable without a known duration.',
+        command: command,
+      ),
+    );
+  }
+
   void _notifyCommandObserver(String command, CommandSource source) {
     try {
       _commandObserver?.call(command, source);
@@ -887,6 +978,18 @@ final class _LoadFlight {
       _interruptCompleter.complete();
     }
   }
+}
+
+final class _SeekConfirmation {
+  const _SeekConfirmation({
+    required this.sequence,
+    required this.target,
+    required this.sourceToken,
+  });
+
+  final int sequence;
+  final Duration target;
+  final PlaybackSourceToken sourceToken;
 }
 
 final class _PlayPauseIntent {
