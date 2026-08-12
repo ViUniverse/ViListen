@@ -406,6 +406,29 @@ void main() {
     await load;
   });
 
+  test('source tokens invalidate before source mutations run', () async {
+    final beforeLoad = coordinator.captureSourceToken();
+    final load = coordinator.load((_) async {
+      expect(coordinator.isSourceTokenCurrent(beforeLoad), isFalse);
+    });
+    await load;
+
+    final beforeNavigation = coordinator.captureSourceToken();
+    expect(coordinator.isSourceTokenCurrent(beforeNavigation), isTrue);
+    final navigation = coordinator.switchSourceIndex(() async {
+      expect(coordinator.isSourceTokenCurrent(beforeNavigation), isFalse);
+    });
+    await navigation;
+
+    final beforeStop = coordinator.captureSourceToken();
+    expect(coordinator.isSourceTokenCurrent(beforeStop), isTrue);
+    final stop = coordinator.stop((_) async {
+      expect(coordinator.isSourceTokenCurrent(beforeStop), isFalse);
+    });
+    await stop;
+    expect(coordinator.isSourceTokenCurrent(beforeStop), isFalse);
+  });
+
   test(
     'a Stop failure releases the barrier for the next graph command',
     () async {

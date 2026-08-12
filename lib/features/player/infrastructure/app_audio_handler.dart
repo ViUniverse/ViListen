@@ -480,8 +480,58 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   @override
-  Future<void> handlePlay(CommandSource source) =>
-      _commandNotReady('play', source);
+  Future<void> handlePlay(CommandSource source) {
+    final snapshot = _latestSnapshot;
+    final currentItem = snapshot.currentItem;
+    final currentIndex = snapshot.currentIndex;
+    if (!_canReplay(snapshot, currentItem, currentIndex)) {
+      return _commandNotReady('play', source);
+    }
+
+    final replay = _ReplayContext(
+      sourceToken: _commandCoordinator.captureSourceToken(),
+      item: currentItem!,
+      index: currentIndex!,
+    );
+    _notifyCommandObserver('play', source);
+    return _commandCoordinator.setDesiredPlaying(
+      true,
+      () => _runReplay(replay),
+    );
+  }
+
+  bool _canReplay(
+    PlaybackSnapshot snapshot,
+    PlayerItem? currentItem,
+    int? currentIndex,
+  ) {
+    if (!snapshot.isCompleted || snapshot.playing) {
+      return false;
+    }
+
+    if (currentItem == null || currentIndex == null) {
+      return false;
+    }
+
+    return currentIndex >= 0 &&
+        currentIndex < snapshot.queue.length &&
+        snapshot.queue[currentIndex] == currentItem;
+  }
+
+  Future<void> _runReplay(_ReplayContext replay) async {
+    await _engine.seek(Duration.zero, index: replay.index);
+    if (!_isReplayCurrent(replay)) {
+      return;
+    }
+
+    await _engine.play();
+  }
+
+  bool _isReplayCurrent(_ReplayContext replay) =>
+      !_disposed &&
+      _commandCoordinator.isSourceTokenCurrent(replay.sourceToken) &&
+      _latestSnapshot.currentIndex == replay.index &&
+      _latestSnapshot.currentItem == replay.item;
 
   @override
   Future<void> handlePause(CommandSource source) =>
@@ -649,4 +699,16 @@ final class _LoadFlight {
       _interruptCompleter.complete();
     }
   }
+}
+
+final class _ReplayContext {
+  const _ReplayContext({
+    required this.sourceToken,
+    required this.item,
+    required this.index,
+  });
+
+  final PlaybackSourceToken sourceToken;
+  final PlayerItem item;
+  final int index;
 }

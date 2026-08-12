@@ -37,11 +37,15 @@ final class FakeLoadInterrupted implements Exception {
 /// the test completes the corresponding [FakeLoadRequest], which makes late
 /// success and error results deterministic.
 final class FakePlaybackEngine implements PlaybackEngine {
-  FakePlaybackEngine({PlayerCallRecorder? recorder, this.playAction})
-    : recorder = recorder ?? PlayerCallRecorder();
+  FakePlaybackEngine({
+    PlayerCallRecorder? recorder,
+    this.playAction,
+    this.seekAction,
+  }) : recorder = recorder ?? PlayerCallRecorder();
 
   final PlayerCallRecorder recorder;
   Future<void> Function()? playAction;
+  Future<void> Function(Duration position, {int? index})? seekAction;
 
   final StreamController<PlayerState> _playerStateController =
       StreamController<PlayerState>.broadcast(sync: true);
@@ -170,7 +174,7 @@ final class FakePlaybackEngine implements PlaybackEngine {
       'seek',
       arguments: <String, Object?>{'position': position, 'index': index},
     );
-    return Future<void>.value();
+    return seekAction?.call(position, index: index) ?? Future<void>.value();
   }
 
   @override

@@ -12,6 +12,29 @@ typedef PlaybackStopTransaction =
 
 typedef PlaybackCommandCall = Future<void> Function();
 
+/// Identity of the source context observed by a Play/Pause transaction.
+///
+/// Source-changing commands invalidate this token before they wait on the
+/// graph lane. This lets an in-flight transaction abandon its continuation
+/// after an awaited engine call without allowing it to touch the replacement
+/// source.
+final class PlaybackSourceToken {
+  const PlaybackSourceToken(this.revision);
+
+  final int revision;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PlaybackSourceToken && other.revision == revision;
+
+  @override
+  int get hashCode => revision.hashCode;
+
+  @override
+  String toString() => 'PlaybackSourceToken(revision: $revision)';
+}
+
 /// Coordinates mutations of the platform playback graph.
 ///
 /// Every load, retry, Stop and source-index switch owns the graph lane until
@@ -27,6 +50,7 @@ final class PlaybackCommandCoordinator {
     : _generationGuard = generationGuard ?? LoadGenerationGuard();
 
   final LoadGenerationGuard _generationGuard;
+  int _sourceRevision = 0;
   Future<void> _graphTail = Future<void>.value();
   _GraphRequest? _activeGraphRequest;
   _GraphRequest? _lastGraphRequest;
@@ -44,6 +68,14 @@ final class PlaybackCommandCoordinator {
   bool isCurrent(LoadGeneration generation) =>
       _generationGuard.isCurrent(generation);
 
+  /// Captures the source context for a transaction that may await the engine.
+  PlaybackSourceToken captureSourceToken() =>
+      PlaybackSourceToken(_sourceRevision);
+
+  /// Returns whether [token] may still continue against the current source.
+  bool isSourceTokenCurrent(PlaybackSourceToken token) =>
+      !_generationGuard.isStopping && token.revision == _sourceRevision;
+
   /// Serializes a source load for the full platform graph transaction.
   ///
   /// The generation is allocated immediately when no Stop barrier is active,
@@ -55,6 +87,7 @@ final class PlaybackCommandCoordinator {
     PlaybackCommandCall? interrupt,
   }) {
     _invalidateSourceDependentCommands();
+    _invalidateSourceContext();
 
     final generation = _generationGuard.isStopping
         ? null
@@ -82,6 +115,7 @@ final class PlaybackCommandCoordinator {
     }
 
     _invalidatePlayPauseIntent();
+    _invalidateSourceContext();
     final generation = _generationGuard.isStopping
         ? null
         : _generationGuard.beginRetry();
@@ -106,6 +140,7 @@ final class PlaybackCommandCoordinator {
   /// transaction and its interrupt handshake; no graph mutations overlap.
   Future<void> stop(PlaybackStopTransaction transaction) {
     _invalidateSourceDependentCommands();
+    _invalidateSourceContext();
     final barrier = _generationGuard.enterStop();
     return _enqueueGraph(() async {
       try {
@@ -126,6 +161,7 @@ final class PlaybackCommandCoordinator {
     PlaybackCommandCall? interrupt,
   }) {
     _invalidateSourceDependentCommands();
+    _invalidateSourceContext();
     if (_generationGuard.isStopping) {
       return _enqueueGraph(() async {
         _generationGuard.invalidateForSourceNavigation();
@@ -252,6 +288,10 @@ final class PlaybackCommandCoordinator {
   void _invalidateSourceDependentCommands() {
     _retryFlight = null;
     _invalidatePlayPauseIntent();
+  }
+
+  void _invalidateSourceContext() {
+    _sourceRevision += 1;
   }
 
   void _invalidatePlayPauseIntent() {
