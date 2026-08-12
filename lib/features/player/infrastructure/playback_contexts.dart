@@ -112,9 +112,9 @@ final class PendingLoadContext {
 /// available to the later latest-generation commit, but cannot change the
 /// active outward snapshot while the request is still pending.
 final class PendingLoadAccumulator {
-  PendingLoadAccumulator(this.generation);
+  PendingLoadAccumulator([this.generation]);
 
-  final LoadGeneration generation;
+  final LoadGeneration? generation;
 
   just_audio.PlayerState? playerState;
   Duration? position;

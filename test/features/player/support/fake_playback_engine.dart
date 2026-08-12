@@ -2,6 +2,7 @@
 
 import 'dart:async';
 
+import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:just_audio/just_audio.dart';
 import 'package:vi_listen/features/player/infrastructure/engine/playback_engine.dart';
 import 'player_call_recorder.dart';
@@ -71,6 +72,7 @@ final class FakePlaybackEngine implements PlaybackEngine {
       StreamController<PlayerException>.broadcast(sync: true);
 
   final List<FakeLoadRequest> _loadRequests = <FakeLoadRequest>[];
+  List<AudioSource> _graphSources = const <AudioSource>[];
   FakeLoadRequest? _activeLoadRequest;
 
   Future<void>? _disposeFuture;
@@ -111,6 +113,16 @@ final class FakePlaybackEngine implements PlaybackEngine {
   List<FakeLoadRequest> get loadRequests =>
       List<FakeLoadRequest>.unmodifiable(_loadRequests);
 
+  List<AudioSource> get graphSources =>
+      List<AudioSource>.unmodifiable(_graphSources);
+
+  List<String?> get graphItemIds => _graphSources
+      .map((source) {
+        final tag = source is UriAudioSource ? source.tag : null;
+        return tag is audio_service.MediaItem ? tag.id : null;
+      })
+      .toList(growable: false);
+
   List<RecordedPlayerCall> get calls => recorder.calls;
 
   int callCountFor(String name) => recorder.callCountFor(name);
@@ -125,6 +137,7 @@ final class FakePlaybackEngine implements PlaybackEngine {
       initialIndex: initialIndex,
     );
     _loadRequests.add(request);
+    _graphSources = request.sources;
     _activeLoadRequest = request;
     recorder.record(
       'load',
@@ -172,6 +185,9 @@ final class FakePlaybackEngine implements PlaybackEngine {
   @override
   Future<void> seek(Duration position, {int? index}) {
     _checkNotDisposed();
+    if (index != null && (index < 0 || index >= _graphSources.length)) {
+      throw RangeError.index(index, _graphSources, 'index');
+    }
     recorder.record(
       'seek',
       arguments: <String, Object?>{'position': position, 'index': index},

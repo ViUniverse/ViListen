@@ -121,6 +121,26 @@ void main() {
     expect(handler.playbackState.value.playing, isFalse);
   });
 
+  test(
+    'Replay seeks the logical item when the effective queue is shuffled',
+    () async {
+      final items = List<PlayerItem>.generate(
+        3,
+        (index) => testPlayerItem(id: 'shuffle-replay-$index'),
+      );
+      await _load(handler, engine, items, effectiveSequence: [2, 0, 1]);
+      expect(handler.playbackState.value.queueIndex, 1);
+      expect(handler.mediaItem.value?.id, items[0].id);
+
+      await _completeCurrentItem(engine);
+      await handler.handlePlay(CommandSource.ui);
+
+      final seek = engine.calls.singleWhere((call) => call.name == 'seek');
+      expect(seek.arguments['index'], 0);
+      expect(engine.callCountFor('play'), 1);
+    },
+  );
+
   test('Play failure does not leave the coordinator stuck', () async {
     final item = testPlayerItem(id: 'play-failure-track');
     await _load(handler, engine, [item]);
@@ -299,10 +319,14 @@ void main() {
 Future<void> _load(
   AppAudioHandler handler,
   FakePlaybackEngine engine,
-  List<PlayerItem> items,
-) async {
+  List<PlayerItem> items, {
+  List<int>? effectiveSequence,
+}) async {
   final load = handler.handleLoadQueue(items, 0, false, CommandSource.ui);
   await pumpEventQueue();
+  if (effectiveSequence != null) {
+    engine.emitEffectiveSequence(effectiveSequence);
+  }
   engine.loadRequests.last.complete();
   await load;
   await pumpEventQueue();

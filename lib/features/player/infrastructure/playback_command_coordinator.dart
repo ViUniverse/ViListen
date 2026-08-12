@@ -160,9 +160,12 @@ final class PlaybackCommandCoordinator {
   Future<void> switchSourceIndex(
     PlaybackCommandCall transaction, {
     PlaybackCommandCall? interrupt,
+    PlaybackSourceToken? sourceToken,
   }) {
     _invalidateSourceDependentCommands();
-    _invalidateSourceContext();
+    if (sourceToken == null) {
+      _invalidateSourceContext();
+    }
     if (_generationGuard.isStopping) {
       return _enqueueGraph(() async {
         _generationGuard.invalidateForSourceNavigation();
@@ -172,6 +175,14 @@ final class PlaybackCommandCoordinator {
 
     _generationGuard.invalidateForSourceNavigation();
     return _enqueueGraph(transaction, interrupt: interrupt);
+  }
+
+  /// Invalidates the current source and returns the token owned by the new
+  /// source transaction. Later source commands invalidate this token.
+  PlaybackSourceToken beginSourceNavigation() {
+    _invalidateSourceDependentCommands();
+    _invalidateSourceContext();
+    return captureSourceToken();
   }
 
   /// Submits a desired Play/Pause intent.

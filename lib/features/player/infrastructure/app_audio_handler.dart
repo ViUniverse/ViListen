@@ -86,8 +86,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
   PlaybackSnapshot _latestSnapshot = PlaybackSnapshot.idle;
   PlaybackSnapshot _lastSystemPublishedSnapshot = PlaybackSnapshot.idle;
+  List<int> _effectiveSequence = const <int>[];
+  List<int>? _pendingEffectiveSequence;
   ActivePlaybackContext? _active;
   PendingLoadContext? _pending;
+  _RestoreGraphContext? _restoring;
   _LoadFlight? _activeLoad;
   _PlayPauseIntent? _playPauseIntent;
   int _nextSeekConfirmationSequence = 0;
@@ -132,13 +135,14 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       ..add(_engine.bufferedPositionStream.listen(_onBufferedPosition))
       ..add(_engine.durationStream.listen(_onDuration))
       ..add(_engine.currentIndexStream.listen(_onCurrentIndex))
+      ..add(_engine.effectiveSequenceStream.listen(_onEffectiveSequence))
       ..add(_engine.speedStream.listen(_onSpeed))
       ..add(_engine.loopModeStream.listen(_onLoopMode))
       ..add(_engine.shuffleModeEnabledStream.listen(_onShuffleEnabled));
   }
 
   void _onPlayerState(just_audio.PlayerState state) {
-    if (_routeToPending((events) => events.onPlayerState(state))) {
+    if (_routeToCurrentLoad((events) => events.onPlayerState(state))) {
       return;
     }
     _reconcilePlayPauseConfirmation(state.playing);
@@ -146,7 +150,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onPosition(Duration position) {
-    if (_routeToPending((events) => events.onPosition(position))) {
+    if (_routeToCurrentLoad((events) => events.onPosition(position))) {
       return;
     }
     if (_disposed) {
@@ -169,7 +173,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onBufferedPosition(Duration bufferedPosition) {
-    if (_routeToPending(
+    if (_routeToCurrentLoad(
       (events) => events.onBufferedPosition(bufferedPosition),
     )) {
       return;
@@ -180,35 +184,78 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onDuration(Duration? duration) {
-    if (_routeToPending((events) => events.onDuration(duration))) {
+    if (_routeToCurrentLoad((events) => events.onDuration(duration))) {
       return;
     }
     _reduceAndPublish(() => _snapshotReducer.onDuration(duration));
   }
 
   void _onCurrentIndex(int? currentIndex) {
-    if (_routeToPending((events) => events.onCurrentIndex(currentIndex))) {
+    if (_routeToCurrentLoad((events) => events.onCurrentIndex(currentIndex))) {
       return;
     }
-    _reduceAndPublish(() => _snapshotReducer.onCurrentIndex(currentIndex));
+    final effectiveIndex = _toEffectiveIndex(currentIndex);
+    _reduceAndPublish(() => _snapshotReducer.onCurrentIndex(effectiveIndex));
+  }
+
+  void _onEffectiveSequence(List<int> sequence) {
+    if (_disposed) {
+      return;
+    }
+
+    final restoring = _restoring;
+    if (restoring != null) {
+      if (_commandCoordinator.isSourceTokenCurrent(restoring.sourceToken)) {
+        restoring.recordEffectiveSequence(sequence);
+      }
+      return;
+    }
+
+    final pending = _pending;
+    if (pending != null) {
+      if (_commandCoordinator.isCurrent(pending.generation)) {
+        _pendingEffectiveSequence = List<int>.unmodifiable(sequence);
+      }
+      return;
+    }
+
+    final active = _active;
+    final logicalQueue = active?.logicalQueue ?? _latestSnapshot.queue;
+    final effectiveQueue = _effectiveQueue(logicalQueue, sequence);
+    if (effectiveQueue == null) {
+      return;
+    }
+
+    _effectiveSequence = List<int>.unmodifiable(sequence);
+    final currentItem = _snapshotReducer.latest.currentItem;
+    final logicalIndex = currentItem == null
+        ? null
+        : logicalQueue.indexOf(currentItem);
+    final effectiveIndex = _toEffectiveIndex(logicalIndex, sequence: sequence);
+    final reduced = _snapshotReducer.commitQueue(
+      effectiveQueue,
+      currentIndex: effectiveIndex,
+    );
+    _updateActiveQueue(effectiveQueue, reduced.currentIndex);
+    _routeImmediate(reduced);
   }
 
   void _onSpeed(double speed) {
-    if (_routeToPending((events) => events.onSpeed(speed))) {
+    if (_routeToCurrentLoad((events) => events.onSpeed(speed))) {
       return;
     }
     _reduceAndPublish(() => _snapshotReducer.onSpeed(speed));
   }
 
   void _onLoopMode(just_audio.LoopMode loopMode) {
-    if (_routeToPending((events) => events.onLoopMode(loopMode))) {
+    if (_routeToCurrentLoad((events) => events.onLoopMode(loopMode))) {
       return;
     }
     _reduceAndPublish(() => _snapshotReducer.onLoopMode(loopMode));
   }
 
   void _onShuffleEnabled(bool enabled) {
-    if (_routeToPending((events) => events.onShuffleEnabled(enabled))) {
+    if (_routeToCurrentLoad((events) => events.onShuffleEnabled(enabled))) {
       return;
     }
     _reduceAndPublish(() => _snapshotReducer.onShuffleEnabled(enabled));
@@ -230,6 +277,19 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
     update(pending.engineEvents);
     return true;
+  }
+
+  bool _routeToCurrentLoad(
+    void Function(PendingLoadAccumulator events) update,
+  ) {
+    final restoring = _restoring;
+    if (restoring != null) {
+      if (_commandCoordinator.isSourceTokenCurrent(restoring.sourceToken)) {
+        update(restoring.engineEvents);
+      }
+      return true;
+    }
+    return _routeToPending(update);
   }
 
   void _reduceAndPublish(PlaybackSnapshot Function() reduce) {
@@ -345,6 +405,116 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     );
   }
 
+  void _updateActiveQueue(List<PlayerItem> effectiveQueue, int? currentIndex) {
+    final active = _active;
+    if (active == null) {
+      return;
+    }
+
+    _active = ActivePlaybackContext(
+      logicalQueue: active.logicalQueue,
+      effectiveQueue: effectiveQueue,
+      currentIndex: currentIndex,
+      position: active.position,
+      desiredPlaying: active.desiredPlaying,
+    );
+  }
+
+  int? _toEffectiveIndex(
+    int? logicalIndex, {
+    List<int>? sequence,
+    int? queueLength,
+  }) {
+    if (logicalIndex == null || logicalIndex < 0) {
+      return null;
+    }
+
+    final length = queueLength ?? _snapshotReducer.latest.queue.length;
+    if (logicalIndex >= length) {
+      return null;
+    }
+
+    final resolvedSequence = _validEffectiveSequence(
+      sequence ?? _effectiveSequence,
+      length,
+    );
+    if (resolvedSequence == null) {
+      return logicalIndex;
+    }
+
+    final effectiveIndex = resolvedSequence.indexOf(logicalIndex);
+    return effectiveIndex < 0 ? null : effectiveIndex;
+  }
+
+  int _toLogicalEngineIndex({
+    required int effectiveIndex,
+    required PlayerItem item,
+  }) {
+    final active = _active;
+    if (active != null &&
+        effectiveIndex >= 0 &&
+        effectiveIndex < active.effectiveQueue.length &&
+        active.effectiveQueue[effectiveIndex] == item) {
+      final logicalIndex = active.logicalQueue.indexOf(item);
+      if (logicalIndex >= 0) {
+        return logicalIndex;
+      }
+    }
+
+    final logicalLength =
+        active?.logicalQueue.length ?? _snapshotReducer.latest.queue.length;
+    final sequence = _validEffectiveSequence(_effectiveSequence, logicalLength);
+    if (sequence != null &&
+        effectiveIndex >= 0 &&
+        effectiveIndex < sequence.length) {
+      return sequence[effectiveIndex];
+    }
+    return effectiveIndex;
+  }
+
+  static List<PlayerItem>? _effectiveQueue(
+    Iterable<PlayerItem> logicalQueue,
+    Iterable<int> sequence,
+  ) {
+    final logicalItems = List<PlayerItem>.unmodifiable(logicalQueue);
+    final resolvedSequence = _validEffectiveSequence(
+      sequence,
+      logicalItems.length,
+    );
+    if (resolvedSequence == null) {
+      return null;
+    }
+
+    return List<PlayerItem>.unmodifiable(
+      resolvedSequence.map((index) => logicalItems[index]),
+    );
+  }
+
+  static List<int>? _validEffectiveSequence(
+    Iterable<int>? sequence,
+    int queueLength,
+  ) {
+    if (sequence == null) {
+      return null;
+    }
+
+    final indexes = List<int>.unmodifiable(sequence);
+    if (indexes.length != queueLength) {
+      return null;
+    }
+
+    final seen = <int>{};
+    for (final index in indexes) {
+      if (index < 0 || index >= queueLength || !seen.add(index)) {
+        return null;
+      }
+    }
+    return indexes;
+  }
+
+  static List<int> _identitySequence(int length) =>
+      List<int>.unmodifiable(List<int>.generate(length, (index) => index));
+
   @override
   Future<void> handleLoadQueue(
     List<PlayerItem> items,
@@ -379,6 +549,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
         generation: generation,
       );
       _pending = pending;
+      _pendingEffectiveSequence = null;
 
       // Keep the active tuple outward during replacement. For an initial load
       // the reducer's canonical tuple is already empty. Pending projections
@@ -429,19 +600,31 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
   void _commitPendingLoad(PendingLoadContext pending) {
     final events = pending.engineEvents;
+    final effectiveSequence = _validEffectiveSequence(
+      _pendingEffectiveSequence,
+      pending.targetQueue.length,
+    );
+    final committedSequence =
+        effectiveSequence ?? _identitySequence(pending.targetQueue.length);
+    final effectiveQueue = _effectiveQueue(
+      pending.targetQueue,
+      committedSequence,
+    )!;
     final eventIndex = events.currentIndex;
-    final currentIndex =
+    final logicalIndex =
         events.hasCurrentIndex &&
             eventIndex != null &&
             eventIndex >= 0 &&
             eventIndex < pending.targetQueue.length
         ? eventIndex
         : pending.targetIndex;
-
-    _snapshotReducer.commitQueue(
-      pending.targetQueue,
-      currentIndex: currentIndex,
+    final currentIndex = _toEffectiveIndex(
+      logicalIndex,
+      sequence: committedSequence,
+      queueLength: pending.targetQueue.length,
     );
+
+    _snapshotReducer.commitQueue(effectiveQueue, currentIndex: currentIndex);
     if (events.hasPosition) {
       _snapshotReducer.onPosition(events.position!);
     }
@@ -467,9 +650,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       just_audio.PlayerState(false, just_audio.ProcessingState.ready),
     );
     _pending = null;
+    _pendingEffectiveSequence = null;
+    _effectiveSequence = committedSequence;
     _active = ActivePlaybackContext(
       logicalQueue: pending.targetQueue,
-      effectiveQueue: pending.targetQueue,
+      effectiveQueue: effectiveQueue,
       currentIndex: committed.currentIndex,
       position: committed.position,
       desiredPlaying: pending.desiredPlaying,
@@ -554,8 +739,15 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
       return _requestDesiredPlaying(
         true,
-        platformCall: (intent) =>
-            _runReplay(intent, item: currentItem, index: currentIndex),
+        platformCall: (intent) => _runReplay(
+          intent,
+          item: currentItem,
+          index: currentIndex,
+          logicalIndex: _toLogicalEngineIndex(
+            effectiveIndex: currentIndex,
+            item: currentItem,
+          ),
+        ),
       );
     }
 
@@ -570,8 +762,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _PlayPauseIntent intent, {
     required PlayerItem item,
     required int index,
+    required int logicalIndex,
   }) async {
-    await _engine.seek(Duration.zero, index: index);
+    await _engine.seek(Duration.zero, index: logicalIndex);
     if (!_isCurrentReplayContinuation(intent, item: item, index: index)) {
       return;
     }
@@ -790,11 +983,355 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
   @override
   Future<void> handleNext(CommandSource source) =>
-      _commandNotReady('next', source);
+      _runNavigation(command: 'next', source: source, next: true);
 
   @override
   Future<void> handlePrevious(CommandSource source) =>
-      _commandNotReady('previous', source);
+      _runNavigation(command: 'previous', source: source, next: false);
+
+  void _prepareNavigation() {
+    _playPauseIntent = null;
+    _pendingSeekConfirmation = null;
+  }
+
+  int _activeLogicalIndex(
+    ActivePlaybackContext active,
+    PlaybackSnapshot snapshot,
+  ) {
+    final effectiveIndex = snapshot.currentIndex;
+    if (effectiveIndex == null ||
+        effectiveIndex < 0 ||
+        effectiveIndex >= active.effectiveQueue.length) {
+      throw StateError(
+        'Cannot restore an active graph without a current item.',
+      );
+    }
+
+    final currentItem = active.effectiveQueue[effectiveIndex];
+    final logicalIndex = active.logicalQueue.indexOf(currentItem);
+    if (logicalIndex < 0) {
+      throw StateError(
+        'The active effective queue is not backed by its graph.',
+      );
+    }
+    return logicalIndex;
+  }
+
+  Future<_RestoredGraph?> _restoreActiveGraph(
+    ActivePlaybackContext active,
+    PlaybackSnapshot snapshot,
+    PlaybackSourceToken sourceToken,
+  ) async {
+    final logicalIndex = _activeLogicalIndex(active, snapshot);
+    final sources = active.logicalQueue
+        .map(PlayerItemMapper.toAudioSource)
+        .toList(growable: false);
+    final restoring = _RestoreGraphContext(sourceToken);
+    final flight = _LoadFlight();
+    _restoring = restoring;
+    _activeLoad = flight;
+
+    try {
+      // A replacement load has already changed the platform graph. Restore the
+      // last committed graph before any navigation index is sent to the engine.
+      final engineLoad = _engine.load(sources, initialIndex: logicalIndex);
+      unawaited(
+        engineLoad.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+      );
+      try {
+        await Future.any<void>([engineLoad, flight.interrupted]);
+      } catch (error, stackTrace) {
+        if (flight.wasInterrupted ||
+            !_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
+          return null;
+        }
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+      if (flight.wasInterrupted ||
+          !_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
+        return null;
+      }
+
+      final engineSeek = _engine.seek(snapshot.position, index: logicalIndex);
+      try {
+        await Future.any<void>([engineSeek, flight.interrupted]);
+      } catch (error, stackTrace) {
+        if (flight.wasInterrupted ||
+            !_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
+          return null;
+        }
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+      if (flight.wasInterrupted ||
+          !_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
+        return null;
+      }
+
+      if (restoring.effectiveSequence == null) {
+        await Future.any<void>([
+          restoring.effectiveSequenceFuture.then<void>((_) {}),
+          flight.interrupted,
+        ]);
+      }
+      if (flight.wasInterrupted ||
+          !_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
+        return null;
+      }
+
+      final sequence = _validEffectiveSequence(
+        restoring.effectiveSequence,
+        active.logicalQueue.length,
+      );
+      if (sequence == null) {
+        return null;
+      }
+
+      final effectiveQueue = _effectiveQueue(active.logicalQueue, sequence);
+      if (effectiveQueue == null) {
+        return null;
+      }
+
+      final currentIndex = _toEffectiveIndex(
+        logicalIndex,
+        sequence: sequence,
+        queueLength: active.logicalQueue.length,
+      );
+      if (currentIndex == null) {
+        return null;
+      }
+      return _RestoredGraph(
+        effectiveQueue: effectiveQueue,
+        effectiveSequence: sequence,
+        currentIndex: currentIndex,
+      );
+    } finally {
+      if (identical(_activeLoad, flight)) {
+        _activeLoad = null;
+      }
+      if (identical(_restoring, restoring)) {
+        _restoring = null;
+      }
+    }
+  }
+
+  void _publishRestoredActiveState(
+    ActivePlaybackContext active,
+    PlaybackSnapshot snapshot,
+    int currentIndex,
+  ) {
+    _snapshotReducer.commitQueue(
+      active.effectiveQueue,
+      currentIndex: currentIndex,
+    );
+    _snapshotReducer.onPosition(snapshot.position);
+    final ready = _snapshotReducer.onPlayerState(
+      just_audio.PlayerState(false, just_audio.ProcessingState.ready),
+    );
+    _routeImmediate(ready);
+  }
+
+  void _resumeRestoredPlayback(
+    ActivePlaybackContext active,
+    PlaybackSourceToken sourceToken,
+  ) {
+    if (!active.desiredPlaying) {
+      return;
+    }
+
+    final play = _requestDesiredPlaying(
+      true,
+      platformCall: (_) => _engine.play(),
+    );
+    unawaited(
+      play.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {
+          if (!_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
+            return;
+          }
+          final paused = _snapshotReducer.onPlayerState(
+            just_audio.PlayerState(false, just_audio.ProcessingState.ready),
+          );
+          _routeImmediate(paused);
+        },
+      ),
+    );
+  }
+
+  void _clearPendingNavigationContext(PendingLoadContext? expected) {
+    if (expected == null || !identical(_pending, expected)) {
+      return;
+    }
+
+    _pending = null;
+    _pendingEffectiveSequence = null;
+  }
+
+  Future<void> _runNavigationTransaction({
+    required PlaybackSnapshot snapshot,
+    required ActivePlaybackContext? active,
+    required PendingLoadContext? pending,
+    required bool restartCurrent,
+    required int? logicalIndex,
+    required PlaybackSourceToken sourceToken,
+  }) async {
+    if (!_commandCoordinator.isSourceTokenCurrent(sourceToken) ||
+        !identical(_pending, pending)) {
+      return;
+    }
+
+    ActivePlaybackContext? restoredActive;
+    if (pending != null) {
+      final committedActive = active;
+      if (committedActive == null) {
+        return;
+      }
+
+      final restored = await _restoreActiveGraph(
+        committedActive,
+        snapshot,
+        sourceToken,
+      );
+      if (restored == null ||
+          !_commandCoordinator.isSourceTokenCurrent(sourceToken) ||
+          !identical(_pending, pending)) {
+        return;
+      }
+
+      _effectiveSequence = restored.effectiveSequence;
+      restoredActive = ActivePlaybackContext(
+        logicalQueue: committedActive.logicalQueue,
+        effectiveQueue: restored.effectiveQueue,
+        currentIndex: restored.currentIndex,
+        position: snapshot.position,
+        desiredPlaying: committedActive.desiredPlaying,
+      );
+      _active = restoredActive;
+      _publishRestoredActiveState(
+        restoredActive,
+        snapshot,
+        restored.currentIndex,
+      );
+      // The pending context has absorbed the interrupt and restore events.
+      // Clear it only after the committed graph is back and immediately
+      // before the optional navigation seek.
+      _clearPendingNavigationContext(pending);
+    }
+
+    if (!_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
+      return;
+    }
+    if (!restartCurrent && logicalIndex != null) {
+      await _engine.seek(Duration.zero, index: logicalIndex);
+    } else if (restartCurrent) {
+      await _engine.seek(Duration.zero);
+    }
+
+    if (!_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
+      return;
+    }
+    if (restoredActive != null) {
+      _resumeRestoredPlayback(restoredActive, sourceToken);
+    }
+  }
+
+  Future<void> _runNavigation({
+    required String command,
+    required CommandSource source,
+    required bool next,
+  }) {
+    _notifyCommandObserver(command, source);
+
+    final snapshot = _snapshotReducer.latest;
+    final active = _active;
+    final pending = _pending;
+    if (snapshot.failure != null ||
+        snapshot.processingState == PlaybackProcessingState.error) {
+      return _commandNotReady(command, source, notify: false);
+    }
+    if (pending != null && active == null) {
+      return _commandNotReady(command, source, notify: false);
+    }
+    if (pending == null &&
+        snapshot.processingState == PlaybackProcessingState.loading) {
+      return _commandNotReady(command, source, notify: false);
+    }
+
+    final effectiveQueue = pending != null
+        ? active!.effectiveQueue
+        : snapshot.queue;
+    final currentIndex = snapshot.currentIndex;
+    if (snapshot.currentItem == null ||
+        currentIndex == null ||
+        currentIndex < 0 ||
+        currentIndex >= effectiveQueue.length) {
+      return _commandNoCurrentItem(command, source, notify: false);
+    }
+
+    final logicalQueue = active?.logicalQueue ?? effectiveQueue;
+    final sequence =
+        _validEffectiveSequence(_effectiveSequence, logicalQueue.length) ??
+        _identitySequence(logicalQueue.length);
+
+    int? targetIndex;
+    var restartCurrent = false;
+    if (next) {
+      if (currentIndex < effectiveQueue.length - 1) {
+        targetIndex = currentIndex + 1;
+      } else if (snapshot.repeatMode == PlayerRepeatMode.all) {
+        targetIndex = 0;
+      }
+    } else {
+      final decision = PlaybackPositionPolicy.previous(
+        position: snapshot.position,
+        currentIndex: currentIndex,
+        queueLength: effectiveQueue.length,
+      );
+      switch (decision.kind) {
+        case PreviousDecisionKind.restartCurrent:
+          restartCurrent = true;
+        case PreviousDecisionKind.navigateToIndex:
+          targetIndex = decision.targetIndex;
+        case PreviousDecisionKind.noOp:
+          if (snapshot.repeatMode == PlayerRepeatMode.all &&
+              currentIndex == 0) {
+            targetIndex = effectiveQueue.length - 1;
+          }
+      }
+    }
+
+    if (!restartCurrent && targetIndex == null) {
+      if (pending == null) {
+        return Future<void>.value();
+      }
+    }
+    if (!restartCurrent &&
+        targetIndex != null &&
+        (targetIndex < 0 || targetIndex >= effectiveQueue.length)) {
+      if (pending == null) {
+        return Future<void>.value();
+      }
+    }
+
+    _prepareNavigation();
+    final sourceToken = _commandCoordinator.beginSourceNavigation();
+
+    final logicalIndex = restartCurrent || targetIndex == null
+        ? null
+        : sequence[targetIndex];
+    return _commandCoordinator.switchSourceIndex(
+      () => _runNavigationTransaction(
+        snapshot: snapshot,
+        active: active,
+        pending: pending,
+        restartCurrent: restartCurrent,
+        logicalIndex: logicalIndex,
+        sourceToken: sourceToken,
+      ),
+      interrupt: _interruptCurrentLoad,
+      sourceToken: sourceToken,
+    );
+  }
 
   @override
   Future<void> handleSetSpeed(double speed, CommandSource source) =>
@@ -970,14 +1507,49 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
 final class _LoadFlight {
   final Completer<void> _interruptCompleter = Completer<void>();
+  bool wasInterrupted = false;
 
   Future<void> get interrupted => _interruptCompleter.future;
 
   void completeInterrupt() {
+    wasInterrupted = true;
     if (!_interruptCompleter.isCompleted) {
       _interruptCompleter.complete();
     }
   }
+}
+
+final class _RestoreGraphContext {
+  _RestoreGraphContext(this.sourceToken)
+    : engineEvents = PendingLoadAccumulator();
+
+  final PlaybackSourceToken sourceToken;
+  final PendingLoadAccumulator engineEvents;
+  final Completer<List<int>> _effectiveSequenceCompleter =
+      Completer<List<int>>();
+  List<int>? effectiveSequence;
+
+  Future<List<int>> get effectiveSequenceFuture =>
+      _effectiveSequenceCompleter.future;
+
+  void recordEffectiveSequence(Iterable<int> sequence) {
+    effectiveSequence = List<int>.unmodifiable(sequence);
+    if (!_effectiveSequenceCompleter.isCompleted) {
+      _effectiveSequenceCompleter.complete(effectiveSequence);
+    }
+  }
+}
+
+final class _RestoredGraph {
+  const _RestoredGraph({
+    required this.effectiveQueue,
+    required this.effectiveSequence,
+    required this.currentIndex,
+  });
+
+  final List<PlayerItem> effectiveQueue;
+  final List<int> effectiveSequence;
+  final int currentIndex;
 }
 
 final class _SeekConfirmation {
