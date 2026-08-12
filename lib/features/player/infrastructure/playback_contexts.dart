@@ -43,6 +43,29 @@ final class ActivePlaybackContext {
   final bool desiredPlaying;
 }
 
+/// Immutable recovery target captured when a recoverable engine failure occurs.
+///
+/// The retry operation is intentionally deferred to PLR-081. Keeping this
+/// context separate from the outward active snapshot ensures a replace failure
+/// can retain A while retrying the failed target B.
+final class RetryContext {
+  RetryContext({
+    required Iterable<PlayerItem> targetQueue,
+    required this.targetIndex,
+    required this.restorePosition,
+    required this.desiredPlaying,
+    required this.failureGeneration,
+    required this.failureItemId,
+  }) : targetQueue = List<PlayerItem>.unmodifiable(targetQueue);
+
+  final List<PlayerItem> targetQueue;
+  final int targetIndex;
+  final Duration restorePosition;
+  final bool desiredPlaying;
+  final LoadGeneration? failureGeneration;
+  final String failureItemId;
+}
+
 /// A validated queue that has started loading but is not current yet.
 ///
 /// [sources] and [mediaItems] are derived from the same immutable

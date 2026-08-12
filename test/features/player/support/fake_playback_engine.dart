@@ -43,12 +43,14 @@ final class FakePlaybackEngine implements PlaybackEngine {
     this.playAction,
     this.pauseAction,
     this.seekAction,
+    this.interruptCompletesLoad = true,
   }) : recorder = recorder ?? PlayerCallRecorder();
 
   final PlayerCallRecorder recorder;
   Future<void> Function()? playAction;
   Future<void> Function()? pauseAction;
   Future<void> Function(Duration position, {int? index})? seekAction;
+  final bool interruptCompletesLoad;
 
   final StreamController<PlayerState> _playerStateController =
       StreamController<PlayerState>.broadcast(sync: true);
@@ -154,7 +156,7 @@ final class FakePlaybackEngine implements PlaybackEngine {
     _checkNotDisposed();
     recorder.record('interruptLoad');
     final request = _activeLoadRequest;
-    if (request != null && !request.isCompleted) {
+    if (interruptCompletesLoad && request != null && !request.isCompleted) {
       _activeLoadRequest = null;
       request.completeError(FakeLoadInterrupted());
     }

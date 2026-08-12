@@ -23,6 +23,7 @@ import 'package:vi_listen/features/player/infrastructure/playback_publication_di
 import 'package:vi_listen/features/player/infrastructure/playback_snapshot_reducer.dart';
 import 'package:vi_listen/features/player/infrastructure/periodic_player_clock.dart';
 import 'package:vi_listen/features/player/infrastructure/player_clock.dart';
+import 'package:vi_listen/features/player/infrastructure/player_failure_mapper.dart';
 import 'package:vi_listen/features/player/infrastructure/player_item_mapper.dart';
 import 'package:vi_listen/features/player/infrastructure/player_policies.dart';
 import 'package:vi_listen/features/player/infrastructure/player_position_projector.dart';
@@ -57,10 +58,14 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     PlayerClock? clock,
     PlaybackCommandObserver? commandObserver,
     PlaybackCommandCoordinator? commandCoordinator,
+    PlayerFailureMapper? failureMapper,
+    PlayerFailurePlatform Function()? failurePlatformResolver,
   ]) : _clock = clock ?? PeriodicPlayerClock(),
        _commandObserver = commandObserver,
-       _commandCoordinator =
-           commandCoordinator ?? PlaybackCommandCoordinator() {
+       _commandCoordinator = commandCoordinator ?? PlaybackCommandCoordinator(),
+       _failureMapper = failureMapper ?? const PlayerFailureMapper(),
+       _failurePlatformResolver =
+           failurePlatformResolver ?? _defaultFailurePlatform {
     _positionProjector = PlayerPositionProjector(clock: _clock);
     _systemTimelineProjector = SystemTimelineProjector(clock: _clock);
     _projectionSubscriptions
@@ -73,6 +78,8 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   final PlayerClock _clock;
   final PlaybackCommandObserver? _commandObserver;
   final PlaybackCommandCoordinator _commandCoordinator;
+  final PlayerFailureMapper _failureMapper;
+  final PlayerFailurePlatform Function() _failurePlatformResolver;
   final StreamController<PlaybackSnapshot> _snapshotController =
       StreamController<PlaybackSnapshot>.broadcast();
   final List<StreamSubscription<dynamic>> _subscriptions =
@@ -93,6 +100,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   int? _pendingEffectiveSequenceEpoch;
   ActivePlaybackContext? _active;
   PendingLoadContext? _pending;
+  RetryContext? _retryContext;
   _RestoreGraphContext? _restoring;
   _LoadFlight? _activeLoad;
   _PlayPauseIntent? _playPauseIntent;
@@ -122,6 +130,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   int _nextPlayPauseSequence = 0;
   Future<void>? _disposeFuture;
   bool _disposed = false;
+
+  @visibleForTesting
+  RetryContext? get retryContext => _retryContext;
 
   @override
   Stream<PlaybackSnapshot> get snapshots =>
@@ -163,7 +174,55 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       ..add(_engine.speedStream.listen(_onSpeed))
       ..add(_engine.loopModeStream.listen(_onLoopMode))
       ..add(_engine.shuffleModeEnabledStream.listen(_onShuffleEnabled));
+    // Source-load errors are owned by the corresponding load Future. This
+    // untagged stream is runtime-only so a delayed A error cannot target B.
+    _subscriptions.add(_engine.errorStream.listen(_onEngineError));
   }
+
+  static PlayerFailurePlatform _defaultFailurePlatform() {
+    if (kIsWeb) {
+      return PlayerFailurePlatform.web;
+    }
+    return switch (defaultTargetPlatform) {
+      TargetPlatform.android => PlayerFailurePlatform.android,
+      TargetPlatform.iOS || TargetPlatform.macOS => PlayerFailurePlatform.apple,
+      _ => PlayerFailurePlatform.unknown,
+    };
+  }
+
+  void _onEngineError(just_audio.PlayerException error) {
+    if (_disposed || _hasSourceTransaction) {
+      return;
+    }
+
+    final active = _active;
+    final snapshot = _snapshotReducer.latest;
+    final item = snapshot.currentItem;
+    if (active == null || item == null) {
+      return;
+    }
+
+    final logicalIndex = active.logicalQueue.indexOf(item);
+    if (logicalIndex < 0) {
+      return;
+    }
+    _publishFailure(
+      error,
+      context: PlayerFailureContext.runtime,
+      itemId: item.id,
+      retryContext: RetryContext(
+        targetQueue: active.logicalQueue,
+        targetIndex: logicalIndex,
+        restorePosition: snapshot.position,
+        desiredPlaying: active.desiredPlaying,
+        failureGeneration: null,
+        failureItemId: item.id,
+      ),
+    );
+  }
+
+  bool get _hasSourceTransaction =>
+      _pending != null || _restoring != null || _activeLoad != null;
 
   void _onPlayerState(just_audio.PlayerState state) {
     if (_routeToCurrentLoad((events) => events.onPlayerState(state))) {
@@ -758,6 +817,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     // Source-changing commands invalidate local intent records immediately
     // after validation succeeds. The coordinator performs the corresponding
     // platform-side invalidation before the new graph transaction starts.
+    _retryContext = null;
     _playPauseIntent = null;
     _pendingSeekConfirmation = null;
     _invalidateActiveShuffleFlight();
@@ -802,6 +862,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
           if (!_commandCoordinator.isCurrent(generation)) {
             return;
           }
+          _handleCurrentLoadFailure(
+            error,
+            pending: pending,
+            generation: generation,
+          );
           Error.throwWithStackTrace(error, stackTrace);
         }
         // PLR-063 will commit only this still-current context. Keep the check at
@@ -952,6 +1017,78 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
     _routeImmediate(committed);
     _maybeFinalizeShuffleFlight(_shuffleFlight);
+  }
+
+  void _handleCurrentLoadFailure(
+    Object error, {
+    required PendingLoadContext pending,
+    required LoadGeneration generation,
+  }) {
+    if (_disposed ||
+        !identical(_pending, pending) ||
+        !_commandCoordinator.isCurrent(generation)) {
+      return;
+    }
+
+    final target = pending.targetQueue[pending.targetIndex];
+    final active = _active;
+    final context = active == null
+        ? PlayerFailureContext.initialLoad
+        : PlayerFailureContext.replaceLoad;
+    final retry = RetryContext(
+      targetQueue: pending.targetQueue,
+      targetIndex: pending.targetIndex,
+      restorePosition: Duration.zero,
+      desiredPlaying: pending.desiredPlaying,
+      failureGeneration: generation,
+      failureItemId: target.id,
+    );
+
+    _clearFailedPendingLoad(pending);
+    _publishFailure(
+      error,
+      context: context,
+      itemId: target.id,
+      retryContext: retry,
+    );
+  }
+
+  void _clearFailedPendingLoad(PendingLoadContext pending) {
+    if (!identical(_pending, pending)) {
+      return;
+    }
+
+    _pending = null;
+    _pendingEffectiveSequence = null;
+    _pendingEffectiveSequenceGeneration = null;
+    _pendingEffectiveSequenceEpoch = null;
+    _pendingShuffleCandidate = null;
+    _invalidateSpeedFlightForGeneration(pending.generation);
+    _invalidateRepeatFlightForGeneration(pending.generation);
+    _invalidateShuffleFlightForGeneration(pending.generation);
+  }
+
+  void _publishFailure(
+    Object error, {
+    required PlayerFailureContext context,
+    required String itemId,
+    required RetryContext retryContext,
+  }) {
+    final failure = _failureMapper.map(
+      error,
+      context: context,
+      platform: _failurePlatformResolver(),
+      itemId: itemId,
+    );
+    if (failure == null) {
+      return;
+    }
+
+    _retryContext = failure.isRecoverable ? retryContext : null;
+    _reduceAndPublish(
+      () =>
+          _snapshotReducer.onFailure(failure, preserveConfirmedPlaying: false),
+    );
   }
 
   void _startAutoplay(LoadGeneration generation) {
