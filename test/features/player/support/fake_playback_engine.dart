@@ -47,6 +47,7 @@ final class FakePlaybackEngine implements PlaybackEngine {
     this.setSpeedAction,
     this.setLoopModeAction,
     this.setShuffleEnabledAction,
+    this.emitStopConfirmation = true,
     this.interruptCompletesLoad = true,
   }) : recorder = recorder ?? PlayerCallRecorder();
 
@@ -58,7 +59,13 @@ final class FakePlaybackEngine implements PlaybackEngine {
   Future<void> Function(double speed)? setSpeedAction;
   Future<void> Function(LoopMode mode)? setLoopModeAction;
   Future<void> Function(bool enabled)? setShuffleEnabledAction;
+  bool emitStopConfirmation;
   final bool interruptCompletesLoad;
+
+  int _sourceGeneration = 0;
+
+  final StreamController<PlaybackEngineEvent> _sourceEventController =
+      StreamController<PlaybackEngineEvent>.broadcast(sync: true);
 
   final StreamController<PlayerState> _playerStateController =
       StreamController<PlayerState>.broadcast(sync: true);
@@ -87,6 +94,9 @@ final class FakePlaybackEngine implements PlaybackEngine {
 
   Future<void>? _disposeFuture;
   bool _disposed = false;
+
+  @override
+  Stream<PlaybackEngineEvent> get sourceEvents => _sourceEventController.stream;
 
   @override
   Stream<PlayerState> get playerStateStream => _playerStateController.stream;
@@ -140,8 +150,13 @@ final class FakePlaybackEngine implements PlaybackEngine {
   int disposeCount = 0;
 
   @override
-  Future<void> load(List<AudioSource> sources, {required int initialIndex}) {
+  Future<void> load(
+    List<AudioSource> sources, {
+    required int initialIndex,
+    required int sourceGeneration,
+  }) {
     _checkNotDisposed();
+    _sourceGeneration = sourceGeneration;
     final request = FakeLoadRequest(
       sources: sources,
       initialIndex: initialIndex,
@@ -189,7 +204,15 @@ final class FakePlaybackEngine implements PlaybackEngine {
   Future<void> stop() {
     _checkNotDisposed();
     recorder.record('stop');
-    return stopAction?.call() ?? Future<void>.value();
+    final operation = stopAction?.call() ?? Future<void>.value();
+    return operation.then<void>((_) {
+      if (emitStopConfirmation) {
+        emitPlayerState(
+          PlayerState(false, ProcessingState.idle),
+          sourceGeneration: _sourceGeneration,
+        );
+      }
+    });
   }
 
   @override
@@ -229,54 +252,117 @@ final class FakePlaybackEngine implements PlaybackEngine {
     return setShuffleEnabledAction?.call(enabled) ?? Future<void>.value();
   }
 
-  void emitPlayerState(PlayerState state) {
+  void emitPlayerState(PlayerState state, {int? sourceGeneration}) {
     _checkNotDisposed();
     _playerStateController.add(state);
+    _emitSourceEvent(
+      PlaybackEngineEventType.playerState,
+      state,
+      sourceGeneration: sourceGeneration,
+    );
   }
 
-  void emitPosition(Duration position) {
+  void emitPosition(Duration position, {int? sourceGeneration}) {
     _checkNotDisposed();
     _positionController.add(position);
+    _emitSourceEvent(
+      PlaybackEngineEventType.position,
+      position,
+      sourceGeneration: sourceGeneration,
+    );
   }
 
-  void emitBufferedPosition(Duration position) {
+  void emitBufferedPosition(Duration position, {int? sourceGeneration}) {
     _checkNotDisposed();
     _bufferedPositionController.add(position);
+    _emitSourceEvent(
+      PlaybackEngineEventType.bufferedPosition,
+      position,
+      sourceGeneration: sourceGeneration,
+    );
   }
 
-  void emitDuration(Duration? duration) {
+  void emitDuration(Duration? duration, {int? sourceGeneration}) {
     _checkNotDisposed();
     _durationController.add(duration);
+    _emitSourceEvent(
+      PlaybackEngineEventType.duration,
+      duration,
+      sourceGeneration: sourceGeneration,
+    );
   }
 
-  void emitCurrentIndex(int? index) {
+  void emitCurrentIndex(int? index, {int? sourceGeneration}) {
     _checkNotDisposed();
     _currentIndexController.add(index);
+    _emitSourceEvent(
+      PlaybackEngineEventType.currentIndex,
+      index,
+      sourceGeneration: sourceGeneration,
+    );
   }
 
-  void emitEffectiveSequence(Iterable<int> indexes) {
+  void emitEffectiveSequence(Iterable<int> indexes, {int? sourceGeneration}) {
     _checkNotDisposed();
-    _effectiveSequenceController.add(List<int>.unmodifiable(indexes));
+    final sequence = List<int>.unmodifiable(indexes);
+    _effectiveSequenceController.add(sequence);
+    _emitSourceEvent(
+      PlaybackEngineEventType.effectiveSequence,
+      sequence,
+      sourceGeneration: sourceGeneration,
+    );
   }
 
-  void emitSpeed(double speed) {
+  void emitSpeed(double speed, {int? sourceGeneration}) {
     _checkNotDisposed();
     _speedController.add(speed);
+    _emitSourceEvent(
+      PlaybackEngineEventType.speed,
+      speed,
+      sourceGeneration: sourceGeneration,
+    );
   }
 
-  void emitLoopMode(LoopMode mode) {
+  void emitLoopMode(LoopMode mode, {int? sourceGeneration}) {
     _checkNotDisposed();
     _loopModeController.add(mode);
+    _emitSourceEvent(
+      PlaybackEngineEventType.loopMode,
+      mode,
+      sourceGeneration: sourceGeneration,
+    );
   }
 
-  void emitShuffleModeEnabled(bool enabled) {
+  void emitShuffleModeEnabled(bool enabled, {int? sourceGeneration}) {
     _checkNotDisposed();
     _shuffleModeController.add(enabled);
+    _emitSourceEvent(
+      PlaybackEngineEventType.shuffleEnabled,
+      enabled,
+      sourceGeneration: sourceGeneration,
+    );
   }
 
-  void emitError(PlayerException error) {
+  void emitError(PlayerException error, {int? sourceGeneration}) {
     _checkNotDisposed();
     _errorController.add(error);
+    _emitSourceEvent(
+      PlaybackEngineEventType.error,
+      error,
+      sourceGeneration: sourceGeneration,
+    );
+  }
+
+  void _emitSourceEvent(
+    PlaybackEngineEventType type,
+    Object? value, {
+    int? sourceGeneration,
+  }) {
+    _sourceEventController.add((
+      sourceGeneration: sourceGeneration ?? _sourceGeneration,
+      type: type,
+      value: value,
+    ));
   }
 
   @override
@@ -299,6 +385,7 @@ final class FakePlaybackEngine implements PlaybackEngine {
       _loopModeController.close(),
       _shuffleModeController.close(),
       _errorController.close(),
+      _sourceEventController.close(),
     ]);
   }
 

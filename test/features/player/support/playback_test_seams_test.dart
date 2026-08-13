@@ -88,7 +88,11 @@ void main() {
       addTearDown(engine.dispose);
       final source = AudioSource.uri(Uri.parse('https://example.test/a.mp3'));
 
-      final loadFuture = engine.load([source], initialIndex: 0);
+      final loadFuture = engine.load(
+        [source],
+        initialIndex: 0,
+        sourceGeneration: 1,
+      );
       final request = engine.loadRequests.single;
       var completed = false;
       loadFuture.then((_) => completed = true);
@@ -113,9 +117,11 @@ void main() {
       addTearDown(engine.dispose);
       final error = StateError('load failed');
       final stackTrace = StackTrace.current;
-      final loadFuture = engine.load([
-        AudioSource.uri(Uri.parse('https://example.test/a.mp3')),
-      ], initialIndex: 0);
+      final loadFuture = engine.load(
+        [AudioSource.uri(Uri.parse('https://example.test/a.mp3'))],
+        initialIndex: 0,
+        sourceGeneration: 1,
+      );
       final observed = expectLater(loadFuture, throwsA(same(error)));
 
       engine.loadRequests.single.completeError(error, stackTrace);
@@ -128,12 +134,16 @@ void main() {
         final engine = FakePlaybackEngine();
         addTearDown(engine.dispose);
 
-        final firstFuture = engine.load([
-          AudioSource.uri(Uri.parse('https://example.test/a.mp3')),
-        ], initialIndex: 0);
-        final secondFuture = engine.load([
-          AudioSource.uri(Uri.parse('https://example.test/b.mp3')),
-        ], initialIndex: 0);
+        final firstFuture = engine.load(
+          [AudioSource.uri(Uri.parse('https://example.test/a.mp3'))],
+          initialIndex: 0,
+          sourceGeneration: 1,
+        );
+        final secondFuture = engine.load(
+          [AudioSource.uri(Uri.parse('https://example.test/b.mp3'))],
+          initialIndex: 0,
+          sourceGeneration: 2,
+        );
         final secondRequest = engine.loadRequests[1];
         final firstRequest = engine.loadRequests[0];
         final firstError = StateError('stale load failed');

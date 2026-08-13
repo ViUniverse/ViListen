@@ -548,6 +548,9 @@ final class _ShuffleTestEngine implements PlaybackEngine {
       delegate.emitEffectiveSequence(indexes);
 
   @override
+  Stream<PlaybackEngineEvent> get sourceEvents => delegate.sourceEvents;
+
+  @override
   Stream<just_audio.PlayerState> get playerStateStream =>
       delegate.playerStateStream;
 
@@ -585,7 +588,12 @@ final class _ShuffleTestEngine implements PlaybackEngine {
   Future<void> load(
     List<just_audio.AudioSource> sources, {
     required int initialIndex,
-  }) => delegate.load(sources, initialIndex: initialIndex);
+    required int sourceGeneration,
+  }) => delegate.load(
+    sources,
+    initialIndex: initialIndex,
+    sourceGeneration: sourceGeneration,
+  );
 
   @override
   Future<void> interruptLoad() => delegate.interruptLoad();

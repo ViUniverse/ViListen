@@ -100,6 +100,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   LoadGeneration? _pendingEffectiveSequenceGeneration;
   int? _pendingEffectiveSequenceEpoch;
   ActivePlaybackContext? _active;
+  int? _activeSourceGeneration;
   PendingLoadContext? _pending;
   RetryContext? _retryContext;
   _RestoreGraphContext? _restoring;
@@ -170,19 +171,44 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       }, isBroadcast: true);
 
   void _bindEngineStreams() {
-    _subscriptions
-      ..add(_engine.playerStateStream.listen(_onPlayerState))
-      ..add(_engine.positionStream.listen(_onPosition))
-      ..add(_engine.bufferedPositionStream.listen(_onBufferedPosition))
-      ..add(_engine.durationStream.listen(_onDuration))
-      ..add(_engine.currentIndexStream.listen(_onCurrentIndex))
-      ..add(_engine.effectiveSequenceStream.listen(_onEffectiveSequence))
-      ..add(_engine.speedStream.listen(_onSpeed))
-      ..add(_engine.loopModeStream.listen(_onLoopMode))
-      ..add(_engine.shuffleModeEnabledStream.listen(_onShuffleEnabled));
-    // Source-load errors are owned by the corresponding load Future. This
-    // untagged stream is runtime-only so a delayed A error cannot target B.
-    _subscriptions.add(_engine.errorStream.listen(_onEngineError));
+    _subscriptions.add(_engine.sourceEvents.listen(_onEngineEvent));
+  }
+
+  void _onEngineEvent(PlaybackEngineEvent event) {
+    switch (event.type) {
+      case PlaybackEngineEventType.playerState:
+        _onPlayerState(
+          event.value! as just_audio.PlayerState,
+          event.sourceGeneration,
+        );
+      case PlaybackEngineEventType.position:
+        _onPosition(event.value! as Duration, event.sourceGeneration);
+      case PlaybackEngineEventType.bufferedPosition:
+        _onBufferedPosition(event.value! as Duration, event.sourceGeneration);
+      case PlaybackEngineEventType.duration:
+        _onDuration(event.value as Duration?, event.sourceGeneration);
+      case PlaybackEngineEventType.currentIndex:
+        _onCurrentIndex(event.value as int?, event.sourceGeneration);
+      case PlaybackEngineEventType.effectiveSequence:
+        _onEffectiveSequence(
+          (event.value! as List<int>),
+          event.sourceGeneration,
+        );
+      case PlaybackEngineEventType.speed:
+        _onSpeed(event.value! as double, event.sourceGeneration);
+      case PlaybackEngineEventType.loopMode:
+        _onLoopMode(
+          event.value! as just_audio.LoopMode,
+          event.sourceGeneration,
+        );
+      case PlaybackEngineEventType.shuffleEnabled:
+        _onShuffleEnabled(event.value! as bool, event.sourceGeneration);
+      case PlaybackEngineEventType.error:
+        _onEngineError(
+          event.value! as just_audio.PlayerException,
+          event.sourceGeneration,
+        );
+    }
   }
 
   static PlayerFailurePlatform _defaultFailurePlatform() {
@@ -196,8 +222,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     };
   }
 
-  void _onEngineError(just_audio.PlayerException error) {
+  void _onEngineError(just_audio.PlayerException error, int sourceGeneration) {
     if (_disposed || _commandCoordinator.isStopping || _hasSourceTransaction) {
+      return;
+    }
+    if (!_isEngineEventForCurrentSource(sourceGeneration)) {
       return;
     }
 
@@ -236,7 +265,26 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   bool get _shouldDropUnownedEngineEvents =>
       _dropUnownedEngineEvents && !_hasOwnedSourceContext;
 
-  void _onPlayerState(just_audio.PlayerState state) {
+  bool _isEngineEventForCurrentSource(int sourceGeneration) {
+    final restoring = _restoring;
+    if (restoring != null) {
+      return sourceGeneration == _activeSourceGeneration;
+    }
+
+    final pending = _pending;
+    if (pending != null) {
+      return sourceGeneration == pending.generation.generation;
+    }
+
+    final active = _active;
+    if (active != null) {
+      return sourceGeneration == _activeSourceGeneration;
+    }
+
+    return !_dropUnownedEngineEvents;
+  }
+
+  void _onPlayerState(just_audio.PlayerState state, int sourceGeneration) {
     if (_disposed) {
       return;
     }
@@ -245,27 +293,39 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       stopEvents?.onPlayerState(state);
       return;
     }
-    if (_routeToCurrentLoad((events) => events.onPlayerState(state))) {
+    if (_routeToCurrentLoad(
+      sourceGeneration,
+      (events) => events.onPlayerState(state),
+    )) {
       return;
     }
     if (_shouldDropUnownedEngineEvents) {
+      return;
+    }
+    if (!_isEngineEventForCurrentSource(sourceGeneration)) {
       return;
     }
     _reconcilePlayPauseConfirmation(state.playing);
     _reduceAndPublish(() => _snapshotReducer.onPlayerState(state));
   }
 
-  void _onPosition(Duration position) {
+  void _onPosition(Duration position, int sourceGeneration) {
     if (_disposed) {
       return;
     }
     if (_commandCoordinator.isStopping) {
       return;
     }
-    if (_routeToCurrentLoad((events) => events.onPosition(position))) {
+    if (_routeToCurrentLoad(
+      sourceGeneration,
+      (events) => events.onPosition(position),
+    )) {
       return;
     }
     if (_shouldDropUnownedEngineEvents) {
+      return;
+    }
+    if (!_isEngineEventForCurrentSource(sourceGeneration)) {
       return;
     }
 
@@ -284,7 +344,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _systemTimelineProjector.onPositionCandidate(candidate);
   }
 
-  void _onBufferedPosition(Duration bufferedPosition) {
+  void _onBufferedPosition(Duration bufferedPosition, int sourceGeneration) {
     if (_disposed) {
       return;
     }
@@ -292,6 +352,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       return;
     }
     if (_routeToCurrentLoad(
+      sourceGeneration,
       (events) => events.onBufferedPosition(bufferedPosition),
     )) {
       return;
@@ -299,38 +360,53 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     if (_shouldDropUnownedEngineEvents) {
       return;
     }
+    if (!_isEngineEventForCurrentSource(sourceGeneration)) {
+      return;
+    }
     _reduceAndPublish(
       () => _snapshotReducer.onBufferedPosition(bufferedPosition),
     );
   }
 
-  void _onDuration(Duration? duration) {
+  void _onDuration(Duration? duration, int sourceGeneration) {
     if (_disposed) {
       return;
     }
     if (_commandCoordinator.isStopping) {
       return;
     }
-    if (_routeToCurrentLoad((events) => events.onDuration(duration))) {
+    if (_routeToCurrentLoad(
+      sourceGeneration,
+      (events) => events.onDuration(duration),
+    )) {
       return;
     }
     if (_shouldDropUnownedEngineEvents) {
+      return;
+    }
+    if (!_isEngineEventForCurrentSource(sourceGeneration)) {
       return;
     }
     _reduceAndPublish(() => _snapshotReducer.onDuration(duration));
   }
 
-  void _onCurrentIndex(int? currentIndex) {
+  void _onCurrentIndex(int? currentIndex, int sourceGeneration) {
     if (_disposed) {
       return;
     }
     if (_commandCoordinator.isStopping) {
       return;
     }
-    if (_routeToCurrentLoad((events) => events.onCurrentIndex(currentIndex))) {
+    if (_routeToCurrentLoad(
+      sourceGeneration,
+      (events) => events.onCurrentIndex(currentIndex),
+    )) {
       return;
     }
     if (_shouldDropUnownedEngineEvents) {
+      return;
+    }
+    if (!_isEngineEventForCurrentSource(sourceGeneration)) {
       return;
     }
     if (_shuffleFlight != null) {
@@ -340,12 +416,16 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _reduceAndPublish(() => _snapshotReducer.onCurrentIndex(effectiveIndex));
   }
 
-  void _onEffectiveSequence(List<int> sequence) {
+  void _onEffectiveSequence(List<int> sequence, int sourceGeneration) {
     if (_disposed) {
       return;
     }
 
     if (_commandCoordinator.isStopping) {
+      return;
+    }
+
+    if (!_isEngineEventForCurrentSource(sourceGeneration)) {
       return;
     }
 
@@ -455,7 +535,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _routeImmediate(reduced);
   }
 
-  void _onSpeed(double speed) {
+  void _onSpeed(double speed, int sourceGeneration) {
     if (_disposed) {
       return;
     }
@@ -463,6 +543,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final stopEvents = _stopEngineEvents;
     if (_commandCoordinator.isStopping) {
       stopEvents?.onSpeed(speed);
+      return;
+    }
+    if (!_isEngineEventForCurrentSource(sourceGeneration)) {
       return;
     }
 
@@ -508,7 +591,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       // speed before commit.
       return;
     }
-    if (_routeToCurrentLoad((events) => events.onSpeed(speed))) {
+    if (_routeToCurrentLoad(
+      sourceGeneration,
+      (events) => events.onSpeed(speed),
+    )) {
       return;
     }
     if (_shouldDropUnownedEngineEvents) {
@@ -517,7 +603,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _reduceAndPublish(() => _snapshotReducer.onSpeed(speed));
   }
 
-  void _onLoopMode(just_audio.LoopMode loopMode) {
+  void _onLoopMode(just_audio.LoopMode loopMode, int sourceGeneration) {
     if (_disposed) {
       return;
     }
@@ -525,6 +611,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final stopEvents = _stopEngineEvents;
     if (_commandCoordinator.isStopping) {
       stopEvents?.onLoopMode(loopMode);
+      return;
+    }
+    if (!_isEngineEventForCurrentSource(sourceGeneration)) {
       return;
     }
 
@@ -574,7 +663,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       // generation-bound flight before its snapshot can be committed.
       return;
     }
-    if (_routeToCurrentLoad((events) => events.onLoopMode(loopMode))) {
+    if (_routeToCurrentLoad(
+      sourceGeneration,
+      (events) => events.onLoopMode(loopMode),
+    )) {
       return;
     }
     if (_shouldDropUnownedEngineEvents) {
@@ -583,7 +675,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _reduceAndPublish(() => _snapshotReducer.onLoopMode(loopMode));
   }
 
-  void _onShuffleEnabled(bool enabled) {
+  void _onShuffleEnabled(bool enabled, int sourceGeneration) {
     if (_disposed) {
       return;
     }
@@ -591,6 +683,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final stopEvents = _stopEngineEvents;
     if (_commandCoordinator.isStopping) {
       stopEvents?.onShuffleEnabled(enabled);
+      return;
+    }
+    if (!_isEngineEventForCurrentSource(sourceGeneration)) {
       return;
     }
 
@@ -626,7 +721,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     }
 
     _lastConfirmedShuffleEnabled = enabled;
-    if (_routeToCurrentLoad((events) => events.onShuffleEnabled(enabled))) {
+    if (_routeToCurrentLoad(
+      sourceGeneration,
+      (events) => events.onShuffleEnabled(enabled),
+    )) {
       return;
     }
     if (_shouldDropUnownedEngineEvents) {
@@ -635,35 +733,28 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _reduceAndPublish(() => _snapshotReducer.onShuffleEnabled(enabled));
   }
 
-  bool _routeToPending(void Function(PendingLoadAccumulator events) update) {
-    if (_disposed) {
-      return true;
-    }
-
-    final pending = _pending;
-    if (pending == null) {
-      return false;
-    }
-
-    if (!_commandCoordinator.isCurrent(pending.generation)) {
-      return true;
-    }
-
-    update(pending.engineEvents);
-    return true;
-  }
-
   bool _routeToCurrentLoad(
+    int sourceGeneration,
     void Function(PendingLoadAccumulator events) update,
   ) {
     final restoring = _restoring;
     if (restoring != null) {
-      if (_commandCoordinator.isSourceTokenCurrent(restoring.sourceToken)) {
+      if (_commandCoordinator.isSourceTokenCurrent(restoring.sourceToken) &&
+          sourceGeneration == _activeSourceGeneration) {
         update(restoring.engineEvents);
       }
       return true;
     }
-    return _routeToPending(update);
+    final pending = _pending;
+    if (pending == null) {
+      return false;
+    }
+    if (!_commandCoordinator.isCurrent(pending.generation) ||
+        sourceGeneration != pending.generation.generation) {
+      return true;
+    }
+    update(pending.engineEvents);
+    return true;
   }
 
   void _reduceAndPublish(PlaybackSnapshot Function() reduce) {
@@ -967,6 +1058,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
         final engineLoad = _engine.load(
           pending.sources,
           initialIndex: pending.targetIndex,
+          sourceGeneration: generation.generation,
         );
         unawaited(
           engineLoad.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
@@ -1145,6 +1237,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _pendingEffectiveSequenceEpoch = null;
     _pendingShuffleCandidate = null;
     _effectiveSequence = committedSequence;
+    _activeSourceGeneration = pending.generation.generation;
     _active = ActivePlaybackContext(
       logicalQueue: pending.targetQueue,
       effectiveQueue: effectiveQueue,
@@ -1555,6 +1648,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       await _awaitOptionOperations();
       try {
         await _engine.stop();
+        if (!stopEvents.isConfirmed) {
+          throw const PlaybackStopNotConfirmed();
+        }
       } catch (error, stackTrace) {
         _applyStopEngineConfirmations(stopEvents);
         _clearStopTransientState();
@@ -1675,6 +1771,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   void _clearSuccessfulStopState() {
     _clearStopTransientState();
     _active = null;
+    _activeSourceGeneration = null;
     _effectiveSequence = const <int>[];
     _dropUnownedEngineEvents = true;
     _invalidateAllOptionFlights();
@@ -1840,7 +1937,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     try {
       // A replacement load has already changed the platform graph. Restore the
       // last committed graph before any navigation index is sent to the engine.
-      final engineLoad = _engine.load(sources, initialIndex: logicalIndex);
+      final engineLoad = _engine.load(
+        sources,
+        initialIndex: logicalIndex,
+        sourceGeneration: _activeSourceGeneration ?? 0,
+      );
       unawaited(
         engineLoad.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
       );
@@ -3326,6 +3427,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       final engineLoad = _engine.load(
         pending.sources,
         initialIndex: context.targetIndex,
+        sourceGeneration: generation.generation,
       );
       unawaited(
         engineLoad.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
@@ -3707,6 +3809,11 @@ final class _StopEngineEvents {
   double? confirmedSpeed;
   PlayerRepeatMode? confirmedRepeatMode;
   bool? confirmedShuffleEnabled;
+
+  bool get isConfirmed =>
+      latestPlayerState != null &&
+      !latestPlayerState!.playing &&
+      latestPlayerState!.processingState == just_audio.ProcessingState.idle;
 
   void onPlayerState(just_audio.PlayerState state) {
     latestPlayerState = state;

@@ -227,10 +227,15 @@ final class _RacePlaybackEngine implements PlaybackEngine {
       StreamController<bool>.broadcast(sync: true);
   final StreamController<just_audio.PlayerException> _errorController =
       StreamController<just_audio.PlayerException>.broadcast(sync: true);
+  final StreamController<PlaybackEngineEvent> _sourceEventController =
+      StreamController<PlaybackEngineEvent>.broadcast(sync: true);
 
   _RaceLoadRequest? _activeLoadRequest;
   Future<void>? _disposeFuture;
   int interruptCount = 0;
+
+  @override
+  Stream<PlaybackEngineEvent> get sourceEvents => _sourceEventController.stream;
 
   @override
   Stream<just_audio.PlayerState> get playerStateStream =>
@@ -269,6 +274,7 @@ final class _RacePlaybackEngine implements PlaybackEngine {
   Future<void> load(
     List<just_audio.AudioSource> sources, {
     required int initialIndex,
+    required int sourceGeneration,
   }) {
     final request = _RaceLoadRequest();
     loadRequests.add(request);
@@ -326,6 +332,7 @@ final class _RacePlaybackEngine implements PlaybackEngine {
       _loopModeController.close(),
       _shuffleController.close(),
       _errorController.close(),
+      _sourceEventController.close(),
     ]);
   }
 }

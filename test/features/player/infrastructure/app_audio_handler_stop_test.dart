@@ -10,6 +10,7 @@ import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
 import 'package:vi_listen/features/player/domain/player_item.dart';
 import 'package:vi_listen/features/player/infrastructure/app_audio_handler.dart';
 import 'package:vi_listen/features/player/infrastructure/command_source.dart';
+import 'package:vi_listen/features/player/infrastructure/engine/playback_engine.dart';
 import '../support/fake_playback_engine.dart';
 import '../support/fake_player_clock.dart';
 import '../support/player_test_data.dart';
@@ -319,6 +320,21 @@ void main() {
     expect(handler.mediaItem.value, isNull);
   });
 
+  test('Stop without engine idle confirmation retains the session', () async {
+    final item = await loadActive(itemId: 'stop-no-confirmation');
+    engine.emitStopConfirmation = false;
+
+    await expectLater(
+      handler.handleStop(CommandSource.ui),
+      throwsA(isA<PlaybackStopNotConfirmed>()),
+    );
+
+    expect(handler.mediaItem.value?.id, item.id);
+    expect(handler.queue.value, isNotEmpty);
+    expect((await latestSnapshot()).failure?.code, 'stopFailed');
+    expect(handler.playbackState.value.errorCode, 1005);
+  });
+
   test('Stop failure retains session/card and exposes stopFailed', () async {
     final item = await loadActive(itemId: 'stop-failure');
     engine.emitPlayerState(
@@ -615,6 +631,59 @@ void main() {
     expect(handler.queue.value, isEmpty);
     expect(await latestSnapshot(), PlaybackSnapshot.idle);
   });
+
+  test(
+    'late old-source events after new load starts cannot contaminate pending source',
+    () async {
+      await loadActive(itemId: 'old-source');
+      await handler.handleStop(CommandSource.ui);
+
+      final newItem = testPlayerItem(id: 'new-source');
+      final speedCalls = engine.callCountFor('setSpeed');
+      final repeatCalls = engine.callCountFor('setLoopMode');
+      final shuffleCalls = engine.callCountFor('setShuffleEnabled');
+      final load = handler.handleLoadQueue(
+        [newItem],
+        0,
+        false,
+        CommandSource.ui,
+      );
+      await pumpEventQueue();
+
+      // Generation 1 is the source that was stopped. Generation 2 is now
+      // pending, so these events must not enter its accumulator.
+      engine.emitPosition(const Duration(seconds: 99), sourceGeneration: 1);
+      engine.emitBufferedPosition(
+        const Duration(seconds: 98),
+        sourceGeneration: 1,
+      );
+      engine.emitDuration(const Duration(minutes: 9), sourceGeneration: 1);
+      engine.emitCurrentIndex(0, sourceGeneration: 1);
+
+      engine.loadRequests.last.complete();
+      await pumpEventQueue();
+
+      await pumpUntil(() => engine.callCountFor('setSpeed') > speedCalls);
+      engine.emitSpeed(1.0);
+      await pumpEventQueue();
+      await pumpUntil(() => engine.callCountFor('setLoopMode') > repeatCalls);
+      engine.emitLoopMode(just_audio.LoopMode.off);
+      await pumpEventQueue();
+      await pumpUntil(
+        () => engine.callCountFor('setShuffleEnabled') > shuffleCalls,
+      );
+      engine.emitShuffleModeEnabled(false);
+      await pumpEventQueue();
+      engine.emitEffectiveSequence(const <int>[0]);
+      await load;
+
+      final snapshot = await latestSnapshot();
+      expect(snapshot.currentItem?.id, newItem.id);
+      expect(snapshot.position, Duration.zero);
+      expect(snapshot.bufferedPosition, Duration.zero);
+      expect(snapshot.duration, Duration.zero);
+    },
+  );
 
   test(
     'remote Stop uses system provenance and removes the system card',
