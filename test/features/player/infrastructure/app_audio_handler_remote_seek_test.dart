@@ -67,9 +67,9 @@ Future<void> _load(AppAudioHandler handler, FakePlaybackEngine engine) async {
     CommandSource.ui,
   );
   await pumpEventQueue();
+  engine.loadRequests.single.complete();
   engine.emitDuration(const Duration(seconds: 60));
   engine.emitPosition(const Duration(seconds: 30));
-  engine.loadRequests.single.complete();
   await load;
   await pumpEventQueue();
 }

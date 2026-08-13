@@ -277,9 +277,9 @@ void main() {
     await pumpEventQueue();
     expect(engine.shuffleCalls, [true, true]);
 
+    engine.loadRequests.single.complete();
     engine.emitShuffleModeEnabled(true);
     engine.emitEffectiveSequence([1, 0]);
-    engine.loadRequests.single.complete();
     await Future.wait<void>([load, first, middle, last]);
     await pumpEventQueue();
 
@@ -308,8 +308,8 @@ void main() {
       await pumpEventQueue();
       expect(engine.shuffleCalls, [true]);
 
-      engine.emitShuffleModeEnabled(true);
       engine.loadRequests.single.complete();
+      engine.emitShuffleModeEnabled(true);
       await pumpEventQueue();
 
       // Mode confirmation alone must not let the load commit with the stale
@@ -472,10 +472,10 @@ Future<void> _loadReady(
     CommandSource.ui,
   );
   await pumpEventQueue();
+  engine.loadRequests.last.complete();
   if (effectiveSequence != null) {
     engine.emitEffectiveSequence(effectiveSequence);
   }
-  engine.loadRequests.last.complete();
   await load;
   await pumpEventQueue();
 }

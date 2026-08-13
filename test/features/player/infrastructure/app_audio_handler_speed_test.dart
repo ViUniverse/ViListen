@@ -204,10 +204,9 @@ void main() {
 
     speedPlatformCall.complete();
     await speed;
+    engine.delegate.loadRequests.single.complete();
     engine.emitSpeed(1.25);
     await pumpEventQueue();
-
-    engine.delegate.loadRequests.single.complete();
     await load;
     await pumpEventQueue();
 
@@ -244,11 +243,10 @@ void main() {
     await pumpEventQueue();
     expect(engine.speedCalls, [1.25, 1.25]);
 
+    engine.delegate.loadRequests.single.complete();
     engine.emitSpeed(1.25);
     await lastA;
     await pumpEventQueue();
-
-    engine.delegate.loadRequests.single.complete();
     await load;
     await pumpEventQueue();
 
@@ -272,8 +270,8 @@ void main() {
     };
 
     await handler.handleSetSpeed(1.25, CommandSource.ui);
+    engine.delegate.loadRequests.single.complete();
     engine.emitSpeed(1.25);
-    await pumpEventQueue();
 
     final loadC = handler.handleLoadQueue([itemC], 0, false, CommandSource.ui);
     await pumpEventQueue();

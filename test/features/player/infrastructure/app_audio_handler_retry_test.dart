@@ -46,8 +46,8 @@ void main() {
       expect(engine.loadRequests.last.initialIndex, 0);
       expect(handler.mediaItem.value, isNull);
 
-      engine.emitDuration(const Duration(seconds: 10));
       engine.loadRequests.last.complete();
+      engine.emitDuration(const Duration(seconds: 10));
       await pumpEventQueue();
       expect(engine.callCountFor('seek'), 1);
       expect(engine.calls.last.name, 'seek');
@@ -82,8 +82,8 @@ void main() {
 
       final retry = handler.handleRetry(CommandSource.ui);
       await pumpEventQueue();
-      engine.emitDuration(const Duration(seconds: 20));
       engine.loadRequests.last.complete();
+      engine.emitDuration(const Duration(seconds: 20));
       await retry;
 
       final seek = engine.calls.lastWhere((call) => call.name == 'seek');
@@ -131,8 +131,8 @@ void main() {
       final retry = handler.handleRetry(CommandSource.ui);
       await pumpEventQueue();
       expect(engine.graphItemIds, [itemB.id]);
-      engine.emitDuration(const Duration(seconds: 12));
       engine.loadRequests.last.complete();
+      engine.emitDuration(const Duration(seconds: 12));
       await pumpEventQueue();
       expect(handler.mediaItem.value?.id, itemA.id);
       seek.complete();
@@ -162,8 +162,8 @@ void main() {
       await pumpEventQueue();
       expect(engine.graphItemIds, [itemA.id, itemB.id, itemC.id]);
       expect(engine.loadRequests.last.initialIndex, 1);
-      engine.emitDuration(const Duration(seconds: 10));
       engine.loadRequests.last.complete();
+      engine.emitDuration(const Duration(seconds: 10));
       await retry;
 
       final seek = engine.calls.lastWhere((call) => call.name == 'seek');
@@ -185,8 +185,8 @@ void main() {
 
       final retry = handler.handleRetry(CommandSource.ui);
       await pumpEventQueue();
-      engine.emitDuration(const Duration(seconds: 10));
       engine.loadRequests.last.complete();
+      engine.emitDuration(const Duration(seconds: 10));
       await pumpEventQueue();
       expect(handler.mediaItem.value?.id, itemA.id);
 
@@ -222,8 +222,8 @@ void main() {
       await pumpEventQueue();
       await handler.handlePlay(CommandSource.ui);
       await handler.handlePause(CommandSource.ui);
-      engine.emitDuration(const Duration(seconds: 10));
       engine.loadRequests.last.complete();
+      engine.emitDuration(const Duration(seconds: 10));
       await first;
 
       expect(engine.callCountFor('load'), 2);
@@ -240,8 +240,8 @@ void main() {
       final retry = handler.handleRetry(CommandSource.ui);
       await pumpEventQueue();
       await handler.handlePlay(CommandSource.ui);
-      engine.emitDuration(const Duration(seconds: 10));
       engine.loadRequests.last.complete();
+      engine.emitDuration(const Duration(seconds: 10));
       await retry;
       await pumpEventQueue();
 

@@ -267,9 +267,9 @@ void main() {
       just_audio.LoopMode.one,
     ]);
 
+    engine.loadRequests.single.complete();
     engine.emitLoopMode(just_audio.LoopMode.one);
     await pumpEventQueue();
-    engine.loadRequests.single.complete();
     await load;
     await pumpEventQueue();
 

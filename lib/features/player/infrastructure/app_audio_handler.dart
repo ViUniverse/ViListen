@@ -133,6 +133,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   int _nextPlayPauseSequence = 0;
   Future<void>? _stopFlight;
   _StopEngineEvents? _stopEngineEvents;
+  int _lastEngineSourceGeneration = 0;
   bool _publishingCanonicalStop = false;
   bool _dropUnownedEngineEvents = false;
   Future<void>? _disposeFuture;
@@ -175,6 +176,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onEngineEvent(PlaybackEngineEvent event) {
+    if (!_commandCoordinator.isStopping &&
+        _isEngineEventForCurrentSource(event.sourceGeneration)) {
+      _lastEngineSourceGeneration = event.sourceGeneration;
+    }
+
     switch (event.type) {
       case PlaybackEngineEventType.playerState:
         _onPlayerState(
@@ -290,7 +296,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     }
     final stopEvents = _stopEngineEvents;
     if (_commandCoordinator.isStopping) {
-      stopEvents?.onPlayerState(state);
+      stopEvents?.onPlayerState(state, sourceGeneration);
       return;
     }
     if (_routeToCurrentLoad(
@@ -542,7 +548,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
     final stopEvents = _stopEngineEvents;
     if (_commandCoordinator.isStopping) {
-      stopEvents?.onSpeed(speed);
+      stopEvents?.onSpeed(speed, sourceGeneration);
       return;
     }
     if (!_isEngineEventForCurrentSource(sourceGeneration)) {
@@ -610,7 +616,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
     final stopEvents = _stopEngineEvents;
     if (_commandCoordinator.isStopping) {
-      stopEvents?.onLoopMode(loopMode);
+      stopEvents?.onLoopMode(loopMode, sourceGeneration);
       return;
     }
     if (!_isEngineEventForCurrentSource(sourceGeneration)) {
@@ -682,7 +688,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
     final stopEvents = _stopEngineEvents;
     if (_commandCoordinator.isStopping) {
-      stopEvents?.onShuffleEnabled(enabled);
+      stopEvents?.onShuffleEnabled(enabled, sourceGeneration);
       return;
     }
     if (!_isEngineEventForCurrentSource(sourceGeneration)) {
@@ -1238,6 +1244,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _pendingShuffleCandidate = null;
     _effectiveSequence = committedSequence;
     _activeSourceGeneration = pending.generation.generation;
+    _lastEngineSourceGeneration = pending.generation.generation;
     _active = ActivePlaybackContext(
       logicalQueue: pending.targetQueue,
       effectiveQueue: effectiveQueue,
@@ -1638,7 +1645,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
   Future<void> _runStopTransaction(PublicationBarrier _) async {
     final preStopSnapshot = _snapshotReducer.latest;
-    final stopEvents = _StopEngineEvents();
+    final stopEvents = _StopEngineEvents(_lastEngineSourceGeneration);
     _stopEngineEvents = stopEvents;
     _invalidateStopContinuations();
 
@@ -1648,9 +1655,6 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       await _awaitOptionOperations();
       try {
         await _engine.stop();
-        if (!stopEvents.isConfirmed) {
-          throw const PlaybackStopNotConfirmed();
-        }
       } catch (error, stackTrace) {
         _applyStopEngineConfirmations(stopEvents);
         _clearStopTransientState();
@@ -3805,29 +3809,39 @@ final class _RestoredGraph {
 }
 
 final class _StopEngineEvents {
+  _StopEngineEvents(this.graphGeneration);
+
+  final int graphGeneration;
   just_audio.PlayerState? latestPlayerState;
   double? confirmedSpeed;
   PlayerRepeatMode? confirmedRepeatMode;
   bool? confirmedShuffleEnabled;
 
-  bool get isConfirmed =>
-      latestPlayerState != null &&
-      !latestPlayerState!.playing &&
-      latestPlayerState!.processingState == just_audio.ProcessingState.idle;
-
-  void onPlayerState(just_audio.PlayerState state) {
+  void onPlayerState(just_audio.PlayerState state, int sourceGeneration) {
+    if (sourceGeneration != graphGeneration) {
+      return;
+    }
     latestPlayerState = state;
   }
 
-  void onSpeed(double speed) {
+  void onSpeed(double speed, int sourceGeneration) {
+    if (sourceGeneration != graphGeneration) {
+      return;
+    }
     confirmedSpeed = speed;
   }
 
-  void onLoopMode(just_audio.LoopMode mode) {
+  void onLoopMode(just_audio.LoopMode mode, int sourceGeneration) {
+    if (sourceGeneration != graphGeneration) {
+      return;
+    }
     confirmedRepeatMode = PlaybackMappers.fromEngineRepeat(mode);
   }
 
-  void onShuffleEnabled(bool enabled) {
+  void onShuffleEnabled(bool enabled, int sourceGeneration) {
+    if (sourceGeneration != graphGeneration) {
+      return;
+    }
     confirmedShuffleEnabled = enabled;
   }
 }

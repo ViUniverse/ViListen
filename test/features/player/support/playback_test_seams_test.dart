@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:vi_listen/features/player/infrastructure/command_source.dart';
+import 'package:vi_listen/features/player/infrastructure/engine/playback_engine.dart';
 import 'fake_playback_engine.dart';
 import 'fake_player_clock.dart';
 import 'player_call_recorder.dart';
@@ -79,6 +80,24 @@ void main() {
       expect(loopModes, [LoopMode.all]);
       expect(shuffleModes, [true]);
       expect(errors, [error]);
+    });
+
+    test('flips source generation only after load completes', () async {
+      final engine = FakePlaybackEngine();
+      addTearDown(engine.dispose);
+      final events = <PlaybackEngineEvent>[];
+      final subscription = engine.sourceEvents.listen(events.add);
+      addTearDown(subscription.cancel);
+      final source = AudioSource.uri(Uri.parse('https://example.test/a.mp3'));
+
+      final load = engine.load([source], initialIndex: 0, sourceGeneration: 7);
+      engine.emitPosition(const Duration(seconds: 1));
+      expect(events.single.sourceGeneration, 0);
+
+      engine.loadRequests.single.complete();
+      await load;
+      engine.emitPosition(const Duration(seconds: 2));
+      expect(events.last.sourceGeneration, 7);
     });
   });
 
@@ -159,6 +178,38 @@ void main() {
         firstRequest.completeError(firstError);
         await firstObserved;
         expect(engine.loadRequests, [firstRequest, secondRequest]);
+      },
+    );
+
+    test(
+      'a stale successful load does not flip the active generation back',
+      () async {
+        final engine = FakePlaybackEngine();
+        addTearDown(engine.dispose);
+        final events = <PlaybackEngineEvent>[];
+        final subscription = engine.sourceEvents.listen(events.add);
+        addTearDown(subscription.cancel);
+
+        final first = engine.load(
+          [AudioSource.uri(Uri.parse('https://example.test/a.mp3'))],
+          initialIndex: 0,
+          sourceGeneration: 1,
+        );
+        final second = engine.load(
+          [AudioSource.uri(Uri.parse('https://example.test/b.mp3'))],
+          initialIndex: 0,
+          sourceGeneration: 2,
+        );
+
+        engine.loadRequests[1].complete();
+        await second;
+        engine.emitPosition(const Duration(seconds: 2));
+        expect(events.last.sourceGeneration, 2);
+
+        engine.loadRequests[0].complete();
+        await first;
+        engine.emitPosition(const Duration(seconds: 3));
+        expect(events.last.sourceGeneration, 2);
       },
     );
   });

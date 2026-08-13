@@ -324,10 +324,10 @@ Future<void> _load(
 }) async {
   final load = handler.handleLoadQueue(items, 0, false, CommandSource.ui);
   await pumpEventQueue();
+  engine.loadRequests.last.complete();
   if (effectiveSequence != null) {
     engine.emitEffectiveSequence(effectiveSequence);
   }
-  engine.loadRequests.last.complete();
   await load;
   await pumpEventQueue();
 }

@@ -48,10 +48,10 @@ void main() {
 
     final load = handler.handleLoadQueue([item], 0, true, CommandSource.ui);
     await pumpEventQueue();
+    engine.loadRequests.single.complete();
     engine.emitPlayerState(
       just_audio.PlayerState(true, just_audio.ProcessingState.ready),
     );
-    engine.loadRequests.single.complete();
 
     await load;
     await pumpEventQueue();
@@ -82,8 +82,8 @@ void main() {
     expect(snapshots.last.processingState, PlaybackProcessingState.loading);
     expect(snapshots.last.currentItem, isNull);
 
-    engine.emitDuration(const Duration(minutes: 2));
     engine.loadRequests.single.complete();
+    engine.emitDuration(const Duration(minutes: 2));
     await load;
     await pumpEventQueue();
 
@@ -174,13 +174,13 @@ void main() {
       engine.emitPlayerState(
         just_audio.PlayerState(true, just_audio.ProcessingState.ready),
       );
-      engine.emitDuration(const Duration(minutes: 3));
       await pumpEventQueue();
       expect(snapshots.last.currentItem, itemA);
       expect(snapshots.last.queue, [itemA]);
       expect(handler.mediaItem.value?.id, itemA.id);
 
       engine.loadRequests.last.complete();
+      engine.emitDuration(const Duration(minutes: 3));
       await loadB;
       await pumpEventQueue();
 

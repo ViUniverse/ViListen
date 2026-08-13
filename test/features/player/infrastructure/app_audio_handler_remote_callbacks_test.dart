@@ -393,9 +393,9 @@ Future<void> _loadReady(
     CommandSource.ui,
   );
   await pumpEventQueue();
+  fixture.engine.loadRequests.last.complete();
   fixture.engine.emitDuration(const Duration(seconds: 60));
   fixture.engine.emitPosition(position);
-  fixture.engine.loadRequests.last.complete();
   await load;
   await pumpEventQueue();
 }

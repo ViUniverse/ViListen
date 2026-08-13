@@ -89,8 +89,8 @@ abstract interface class PlaybackEngine {
   /// `playing == false` with [ProcessingState.idle].
   ///
   /// Implementations must throw when the command Future completes without
-  /// that engine confirmation. The handler must not infer canonical idle from
-  /// command completion alone.
+  /// that engine confirmation. A successful Future is the handler's sole Stop
+  /// confirmation authority; source-event timing must not be checked again.
   Future<void> stop();
 
   Future<void> seek(Duration position, {int? index});

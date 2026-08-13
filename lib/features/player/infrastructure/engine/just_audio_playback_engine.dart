@@ -9,44 +9,7 @@ import 'playback_engine.dart';
 /// Production [PlaybackEngine] backed by exactly one [AudioPlayer].
 final class JustAudioPlaybackEngine implements PlaybackEngine {
   JustAudioPlaybackEngine() {
-    _sourceEventSubscriptions.addAll([
-      _player.playerStateStream.listen(
-        (value) => _emitSourceEvent(PlaybackEngineEventType.playerState, value),
-      ),
-      _player.positionStream.listen(
-        (value) => _emitSourceEvent(PlaybackEngineEventType.position, value),
-      ),
-      _player.bufferedPositionStream.listen(
-        (value) =>
-            _emitSourceEvent(PlaybackEngineEventType.bufferedPosition, value),
-      ),
-      _player.durationStream.listen(
-        (value) => _emitSourceEvent(PlaybackEngineEventType.duration, value),
-      ),
-      _player.currentIndexStream.listen(
-        (value) =>
-            _emitSourceEvent(PlaybackEngineEventType.currentIndex, value),
-      ),
-      _player.sequenceStateStream.listen(
-        (value) => _emitSourceEvent(
-          PlaybackEngineEventType.effectiveSequence,
-          _effectiveSequence(value),
-        ),
-      ),
-      _player.speedStream.listen(
-        (value) => _emitSourceEvent(PlaybackEngineEventType.speed, value),
-      ),
-      _player.loopModeStream.listen(
-        (value) => _emitSourceEvent(PlaybackEngineEventType.loopMode, value),
-      ),
-      _player.shuffleModeEnabledStream.listen(
-        (value) =>
-            _emitSourceEvent(PlaybackEngineEventType.shuffleEnabled, value),
-      ),
-      _player.errorStream.listen(
-        (value) => _emitSourceEvent(PlaybackEngineEventType.error, value),
-      ),
-    ]);
+    _bindSourceEvents(0);
   }
 
   final AudioPlayer _player = AudioPlayer();
@@ -57,7 +20,6 @@ final class JustAudioPlaybackEngine implements PlaybackEngine {
 
   Future<void>? _disposeFuture;
   int _loadRevision = 0;
-  int _sourceGeneration = 0;
 
   @override
   Stream<PlaybackEngineEvent> get sourceEvents => _sourceEventController.stream;
@@ -110,8 +72,9 @@ final class JustAudioPlaybackEngine implements PlaybackEngine {
       initialIndex: initialIndex,
     );
     _checkLoadRevision(revision);
-    _sourceGeneration = sourceGeneration;
-    _emitCurrentGraphState();
+    await _rebindSourceEvents(sourceGeneration);
+    _checkLoadRevision(revision);
+    _emitCurrentGraphState(sourceGeneration);
   }
 
   @override
@@ -174,36 +137,150 @@ final class JustAudioPlaybackEngine implements PlaybackEngine {
     }
   }
 
-  void _emitSourceEvent(PlaybackEngineEventType type, Object? value) {
+  void _bindSourceEvents(int sourceGeneration) {
+    _sourceEventSubscriptions.addAll([
+      _player.playerStateStream.listen(
+        (value) => _emitSourceEvent(
+          sourceGeneration,
+          PlaybackEngineEventType.playerState,
+          value,
+        ),
+      ),
+      _player.positionStream.listen(
+        (value) => _emitSourceEvent(
+          sourceGeneration,
+          PlaybackEngineEventType.position,
+          value,
+        ),
+      ),
+      _player.bufferedPositionStream.listen(
+        (value) => _emitSourceEvent(
+          sourceGeneration,
+          PlaybackEngineEventType.bufferedPosition,
+          value,
+        ),
+      ),
+      _player.durationStream.listen(
+        (value) => _emitSourceEvent(
+          sourceGeneration,
+          PlaybackEngineEventType.duration,
+          value,
+        ),
+      ),
+      _player.currentIndexStream.listen(
+        (value) => _emitSourceEvent(
+          sourceGeneration,
+          PlaybackEngineEventType.currentIndex,
+          value,
+        ),
+      ),
+      _player.sequenceStateStream.listen(
+        (value) => _emitSourceEvent(
+          sourceGeneration,
+          PlaybackEngineEventType.effectiveSequence,
+          _effectiveSequence(value),
+        ),
+      ),
+      _player.speedStream.listen(
+        (value) => _emitSourceEvent(
+          sourceGeneration,
+          PlaybackEngineEventType.speed,
+          value,
+        ),
+      ),
+      _player.loopModeStream.listen(
+        (value) => _emitSourceEvent(
+          sourceGeneration,
+          PlaybackEngineEventType.loopMode,
+          value,
+        ),
+      ),
+      _player.shuffleModeEnabledStream.listen(
+        (value) => _emitSourceEvent(
+          sourceGeneration,
+          PlaybackEngineEventType.shuffleEnabled,
+          value,
+        ),
+      ),
+      _player.errorStream.listen(
+        (value) => _emitSourceEvent(
+          sourceGeneration,
+          PlaybackEngineEventType.error,
+          value,
+        ),
+      ),
+    ]);
+  }
+
+  Future<void> _rebindSourceEvents(int sourceGeneration) async {
+    final subscriptions = List<StreamSubscription<dynamic>>.of(
+      _sourceEventSubscriptions,
+    );
+    _sourceEventSubscriptions.clear();
+    await Future.wait<void>(
+      subscriptions.map((subscription) => subscription.cancel()),
+    );
+    _bindSourceEvents(sourceGeneration);
+  }
+
+  void _emitSourceEvent(
+    int sourceGeneration,
+    PlaybackEngineEventType type,
+    Object? value,
+  ) {
     if (_sourceEventController.isClosed) {
       return;
     }
     _sourceEventController.add((
-      sourceGeneration: _sourceGeneration,
+      sourceGeneration: sourceGeneration,
       type: type,
       value: value,
     ));
   }
 
-  void _emitCurrentGraphState() {
-    _emitSourceEvent(PlaybackEngineEventType.playerState, _player.playerState);
-    _emitSourceEvent(PlaybackEngineEventType.position, _player.position);
+  void _emitCurrentGraphState(int sourceGeneration) {
     _emitSourceEvent(
+      sourceGeneration,
+      PlaybackEngineEventType.playerState,
+      _player.playerState,
+    );
+    _emitSourceEvent(
+      sourceGeneration,
+      PlaybackEngineEventType.position,
+      _player.position,
+    );
+    _emitSourceEvent(
+      sourceGeneration,
       PlaybackEngineEventType.bufferedPosition,
       _player.bufferedPosition,
     );
-    _emitSourceEvent(PlaybackEngineEventType.duration, _player.duration);
     _emitSourceEvent(
+      sourceGeneration,
+      PlaybackEngineEventType.duration,
+      _player.duration,
+    );
+    _emitSourceEvent(
+      sourceGeneration,
       PlaybackEngineEventType.currentIndex,
       _player.currentIndex,
     );
     _emitSourceEvent(
+      sourceGeneration,
       PlaybackEngineEventType.effectiveSequence,
       _effectiveSequence(_player.sequenceState),
     );
-    _emitSourceEvent(PlaybackEngineEventType.speed, _player.speed);
-    _emitSourceEvent(PlaybackEngineEventType.loopMode, _player.loopMode);
     _emitSourceEvent(
+      sourceGeneration,
+      PlaybackEngineEventType.speed,
+      _player.speed,
+    );
+    _emitSourceEvent(
+      sourceGeneration,
+      PlaybackEngineEventType.loopMode,
+      _player.loopMode,
+    );
+    _emitSourceEvent(
+      sourceGeneration,
       PlaybackEngineEventType.shuffleEnabled,
       _player.shuffleModeEnabled,
     );

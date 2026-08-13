@@ -322,7 +322,8 @@ void main() {
 
   test('Stop without engine idle confirmation retains the session', () async {
     final item = await loadActive(itemId: 'stop-no-confirmation');
-    engine.emitStopConfirmation = false;
+    engine.stopAction = () =>
+        Future<void>.error(const PlaybackStopNotConfirmed());
 
     await expectLater(
       handler.handleStop(CommandSource.ui),
@@ -333,6 +334,45 @@ void main() {
     expect(handler.queue.value, isNotEmpty);
     expect((await latestSnapshot()).failure?.code, 'stopFailed');
     expect(handler.playbackState.value.errorCode, 1005);
+  });
+
+  test(
+    'successful Stop trusts the engine contract without a source event',
+    () async {
+      await loadActive(itemId: 'stop-no-source-event');
+      engine.emitStopConfirmation = false;
+
+      await handler.handleStop(CommandSource.ui);
+
+      expect(handler.mediaItem.value, isNull);
+      expect(handler.queue.value, isEmpty);
+      expect(await latestSnapshot(), PlaybackSnapshot.idle);
+    },
+  );
+
+  test('Stop failure ignores state from an older graph generation', () async {
+    await loadActive(itemId: 'stop-old-generation');
+    engine.emitPlayerState(
+      just_audio.PlayerState(true, just_audio.ProcessingState.ready),
+    );
+    await pumpEventQueue();
+    final stopError = StateError('stop failed');
+    engine.stopAction = () {
+      engine.emitPlayerState(
+        just_audio.PlayerState(false, just_audio.ProcessingState.ready),
+        sourceGeneration: 0,
+      );
+      return Future<void>.error(stopError);
+    };
+
+    await expectLater(
+      handler.handleStop(CommandSource.ui),
+      throwsA(same(stopError)),
+    );
+
+    final snapshot = await latestSnapshot();
+    expect(snapshot.failure?.code, 'stopFailed');
+    expect(snapshot.playing, isTrue);
   });
 
   test('Stop failure retains session/card and exposes stopFailed', () async {

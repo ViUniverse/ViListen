@@ -283,11 +283,11 @@ Future<void> _load(
     CommandSource.ui,
   );
   await pumpEventQueue();
+  engine.loadRequests.single.complete();
   if (duration != null) {
     engine.emitDuration(duration);
   }
   engine.emitPosition(position);
-  engine.loadRequests.single.complete();
   await load;
   await pumpEventQueue();
 }

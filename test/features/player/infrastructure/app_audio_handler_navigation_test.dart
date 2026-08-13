@@ -461,12 +461,12 @@ Future<void> _loadWith(
     CommandSource.ui,
   );
   await pumpEventQueue();
+  engine.loadRequests.last.complete();
   engine.emitPosition(position);
   engine.emitLoopMode(loopMode);
   if (effectiveSequence != null) {
     engine.emitEffectiveSequence(effectiveSequence);
   }
-  engine.loadRequests.last.complete();
   await load;
   await pumpEventQueue();
 }

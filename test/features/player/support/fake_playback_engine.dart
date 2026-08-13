@@ -11,17 +11,27 @@ final class FakeLoadRequest {
   FakeLoadRequest({
     required List<AudioSource> sources,
     required this.initialIndex,
+    required this.sourceGeneration,
+    required this.onSuccessfulComplete,
   }) : sources = List<AudioSource>.unmodifiable(sources);
 
   final List<AudioSource> sources;
   final int initialIndex;
+  final int sourceGeneration;
+  final void Function()? onSuccessfulComplete;
   final Completer<void> _completer = Completer<void>();
 
   Future<void> get future => _completer.future;
 
   bool get isCompleted => _completer.isCompleted;
 
-  void complete() => _completer.complete();
+  void complete() {
+    if (_completer.isCompleted) {
+      return;
+    }
+    onSuccessfulComplete?.call();
+    _completer.complete();
+  }
 
   void completeError(Object error, [StackTrace? stackTrace]) =>
       _completer.completeError(error, stackTrace ?? StackTrace.current);
@@ -156,10 +166,16 @@ final class FakePlaybackEngine implements PlaybackEngine {
     required int sourceGeneration,
   }) {
     _checkNotDisposed();
-    _sourceGeneration = sourceGeneration;
-    final request = FakeLoadRequest(
+    late final FakeLoadRequest request;
+    request = FakeLoadRequest(
       sources: sources,
       initialIndex: initialIndex,
+      sourceGeneration: sourceGeneration,
+      onSuccessfulComplete: () {
+        if (identical(_activeLoadRequest, request)) {
+          _sourceGeneration = request.sourceGeneration;
+        }
+      },
     );
     _loadRequests.add(request);
     _graphSources = request.sources;
