@@ -64,6 +64,13 @@ final class PlaybackCommandCoordinator {
 
   bool get isStopping => _generationGuard.isStopping;
 
+  /// Whether a graph request is active or queued behind the graph lane.
+  ///
+  /// The handler uses this to distinguish canonical idle from a load that has
+  /// been submitted but has not reached its transaction callback yet.
+  bool get hasGraphWork =>
+      _activeGraphRequest != null || _lastGraphRequest != null;
+
   int get publicationEpoch => _generationGuard.publicationEpoch;
 
   bool isCurrent(LoadGeneration generation) =>

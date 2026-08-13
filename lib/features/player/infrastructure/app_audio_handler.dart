@@ -9,6 +9,7 @@ import 'package:vi_listen/features/player/application/player_command_policies.da
 import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
 import 'package:vi_listen/features/player/domain/playback_processing_state.dart';
 import 'package:vi_listen/features/player/domain/player_command_failure.dart';
+import 'package:vi_listen/features/player/domain/player_failure.dart';
 import 'package:vi_listen/features/player/domain/player_item.dart';
 import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
 import 'package:vi_listen/features/player/infrastructure/command_source.dart';
@@ -109,6 +110,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   int _desiredSpeedRevision = 0;
   _SpeedFlight? _speedFlight;
   _SpeedFlight? _queuedSpeedFlight;
+  final Set<Future<void>> _optionOperations = <Future<void>>{};
   LoadGeneration? _lastAppliedSpeedGeneration;
   int? _lastAppliedSpeedRevision;
   PlayerRepeatMode _desiredRepeatMode = PlaybackSnapshot.idle.repeatMode;
@@ -128,6 +130,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   int _nextSeekConfirmationSequence = 0;
   _SeekConfirmation? _pendingSeekConfirmation;
   int _nextPlayPauseSequence = 0;
+  Future<void>? _stopFlight;
+  _StopEngineEvents? _stopEngineEvents;
+  bool _publishingCanonicalStop = false;
+  bool _dropUnownedEngineEvents = false;
   Future<void>? _disposeFuture;
   bool _disposed = false;
 
@@ -191,7 +197,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onEngineError(just_audio.PlayerException error) {
-    if (_disposed || _hasSourceTransaction) {
+    if (_disposed || _commandCoordinator.isStopping || _hasSourceTransaction) {
       return;
     }
 
@@ -224,8 +230,25 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   bool get _hasSourceTransaction =>
       _pending != null || _restoring != null || _activeLoad != null;
 
+  bool get _hasOwnedSourceContext =>
+      _active != null || _pending != null || _restoring != null;
+
+  bool get _shouldDropUnownedEngineEvents =>
+      _dropUnownedEngineEvents && !_hasOwnedSourceContext;
+
   void _onPlayerState(just_audio.PlayerState state) {
+    if (_disposed) {
+      return;
+    }
+    final stopEvents = _stopEngineEvents;
+    if (_commandCoordinator.isStopping) {
+      stopEvents?.onPlayerState(state);
+      return;
+    }
     if (_routeToCurrentLoad((events) => events.onPlayerState(state))) {
+      return;
+    }
+    if (_shouldDropUnownedEngineEvents) {
       return;
     }
     _reconcilePlayPauseConfirmation(state.playing);
@@ -233,10 +256,16 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onPosition(Duration position) {
+    if (_disposed) {
+      return;
+    }
+    if (_commandCoordinator.isStopping) {
+      return;
+    }
     if (_routeToCurrentLoad((events) => events.onPosition(position))) {
       return;
     }
-    if (_disposed) {
+    if (_shouldDropUnownedEngineEvents) {
       return;
     }
 
@@ -256,9 +285,18 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onBufferedPosition(Duration bufferedPosition) {
+    if (_disposed) {
+      return;
+    }
+    if (_commandCoordinator.isStopping) {
+      return;
+    }
     if (_routeToCurrentLoad(
       (events) => events.onBufferedPosition(bufferedPosition),
     )) {
+      return;
+    }
+    if (_shouldDropUnownedEngineEvents) {
       return;
     }
     _reduceAndPublish(
@@ -267,14 +305,32 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onDuration(Duration? duration) {
+    if (_disposed) {
+      return;
+    }
+    if (_commandCoordinator.isStopping) {
+      return;
+    }
     if (_routeToCurrentLoad((events) => events.onDuration(duration))) {
+      return;
+    }
+    if (_shouldDropUnownedEngineEvents) {
       return;
     }
     _reduceAndPublish(() => _snapshotReducer.onDuration(duration));
   }
 
   void _onCurrentIndex(int? currentIndex) {
+    if (_disposed) {
+      return;
+    }
+    if (_commandCoordinator.isStopping) {
+      return;
+    }
     if (_routeToCurrentLoad((events) => events.onCurrentIndex(currentIndex))) {
+      return;
+    }
+    if (_shouldDropUnownedEngineEvents) {
       return;
     }
     if (_shuffleFlight != null) {
@@ -286,6 +342,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
   void _onEffectiveSequence(List<int> sequence) {
     if (_disposed) {
+      return;
+    }
+
+    if (_commandCoordinator.isStopping) {
       return;
     }
 
@@ -372,6 +432,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     }
 
     final active = _active;
+    if (active == null && _latestSnapshot.queue.isEmpty) {
+      return;
+    }
     final logicalQueue = active?.logicalQueue ?? _latestSnapshot.queue;
     final effectiveQueue = _effectiveQueue(logicalQueue, sequence);
     if (effectiveQueue == null) {
@@ -394,6 +457,12 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
   void _onSpeed(double speed) {
     if (_disposed) {
+      return;
+    }
+
+    final stopEvents = _stopEngineEvents;
+    if (_commandCoordinator.isStopping) {
+      stopEvents?.onSpeed(speed);
       return;
     }
 
@@ -442,11 +511,20 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     if (_routeToCurrentLoad((events) => events.onSpeed(speed))) {
       return;
     }
+    if (_shouldDropUnownedEngineEvents) {
+      return;
+    }
     _reduceAndPublish(() => _snapshotReducer.onSpeed(speed));
   }
 
   void _onLoopMode(just_audio.LoopMode loopMode) {
     if (_disposed) {
+      return;
+    }
+
+    final stopEvents = _stopEngineEvents;
+    if (_commandCoordinator.isStopping) {
+      stopEvents?.onLoopMode(loopMode);
       return;
     }
 
@@ -499,11 +577,20 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     if (_routeToCurrentLoad((events) => events.onLoopMode(loopMode))) {
       return;
     }
+    if (_shouldDropUnownedEngineEvents) {
+      return;
+    }
     _reduceAndPublish(() => _snapshotReducer.onLoopMode(loopMode));
   }
 
   void _onShuffleEnabled(bool enabled) {
     if (_disposed) {
+      return;
+    }
+
+    final stopEvents = _stopEngineEvents;
+    if (_commandCoordinator.isStopping) {
+      stopEvents?.onShuffleEnabled(enabled);
       return;
     }
 
@@ -540,6 +627,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
     _lastConfirmedShuffleEnabled = enabled;
     if (_routeToCurrentLoad((events) => events.onShuffleEnabled(enabled))) {
+      return;
+    }
+    if (_shouldDropUnownedEngineEvents) {
       return;
     }
     _reduceAndPublish(() => _snapshotReducer.onShuffleEnabled(enabled));
@@ -603,6 +693,23 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _systemTimelineProjector.onImmediate(snapshot);
   }
 
+  void _publishCanonicalStopIdle() {
+    if (_disposed) {
+      return;
+    }
+
+    // The system projector uses a synchronous broadcast controller. Publish it
+    // first so the Stop-specific media/session order is observable before the
+    // single Domain idle snapshot is emitted by the UI projector.
+    _publishingCanonicalStop = true;
+    try {
+      _systemTimelineProjector.onImmediate(PlaybackSnapshot.idle);
+    } finally {
+      _publishingCanonicalStop = false;
+    }
+    _positionProjector.onImmediate(PlaybackSnapshot.idle);
+  }
+
   void _onUiProjection(PlaybackSnapshot snapshot) {
     if (_disposed) {
       return;
@@ -620,6 +727,14 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
   void _onSystemProjection(PlaybackSnapshot snapshot) {
     if (_disposed) {
+      return;
+    }
+
+    if (_publishingCanonicalStop) {
+      _lastSystemPublishedSnapshot = snapshot;
+      mediaItem.add(null);
+      queue.add(const <audio_service.MediaItem>[]);
+      playbackState.add(_systemPlaybackStateMapper.map(snapshot));
       return;
     }
 
@@ -828,6 +943,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       }
 
       _rememberActiveContext();
+      _dropUnownedEngineEvents = false;
       final pending = PendingLoadContext.fromItems(
         items: validatedItems,
         targetIndex: initialIndex,
@@ -1163,6 +1279,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   Future<void> handlePlay(CommandSource source) {
     _notifyCommandObserver('play', source);
 
+    if (_commandCoordinator.isStopping) {
+      return _commandNotReady('play', source, notify: false);
+    }
+
     final pending = _currentPendingLoad();
     if (pending != null) {
       pending.desiredPlaying = true;
@@ -1330,6 +1450,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   Future<void> handlePause(CommandSource source) {
     _notifyCommandObserver('pause', source);
 
+    if (_commandCoordinator.isStopping) {
+      return _commandNotReady('pause', source, notify: false);
+    }
+
     final pending = _currentPendingLoad();
     if (pending != null) {
       pending.desiredPlaying = false;
@@ -1363,8 +1487,220 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   @override
-  Future<void> handleStop(CommandSource source) =>
-      _commandNotReady('stop', source);
+  Future<void> handleStop(CommandSource source) {
+    _notifyCommandObserver('stop', source);
+
+    final existing = _stopFlight;
+    if (existing != null) {
+      return existing;
+    }
+
+    if (_isCanonicalIdleWithoutPendingWork) {
+      return Future<void>.value();
+    }
+
+    if (_disposed) {
+      return _commandNotReady('stop', source, notify: false);
+    }
+
+    final operation = _commandCoordinator.stop(
+      (barrier) => _runStopTransaction(barrier),
+    );
+    _stopFlight = operation;
+    unawaited(
+      operation.then<void>(
+        (_) {
+          if (identical(_stopFlight, operation)) {
+            _stopFlight = null;
+          }
+        },
+        onError: (Object _, StackTrace _) {
+          if (identical(_stopFlight, operation)) {
+            _stopFlight = null;
+          }
+        },
+      ),
+    );
+    return operation;
+  }
+
+  bool get _isCanonicalIdleWithoutPendingWork =>
+      _latestSnapshot == PlaybackSnapshot.idle &&
+      _snapshotReducer.latest == PlaybackSnapshot.idle &&
+      _active == null &&
+      _pending == null &&
+      _restoring == null &&
+      _activeLoad == null &&
+      _retryContext == null &&
+      _playPauseIntent == null &&
+      _pendingSeekConfirmation == null &&
+      _speedFlight == null &&
+      _queuedSpeedFlight == null &&
+      _repeatFlight == null &&
+      _queuedRepeatFlight == null &&
+      _shuffleFlight == null &&
+      _queuedShuffleFlight == null &&
+      _optionOperations.isEmpty &&
+      !_commandCoordinator.hasGraphWork;
+
+  Future<void> _runStopTransaction(PublicationBarrier _) async {
+    final preStopSnapshot = _snapshotReducer.latest;
+    final stopEvents = _StopEngineEvents();
+    _stopEngineEvents = stopEvents;
+    _invalidateStopContinuations();
+
+    try {
+      // An option setter dispatched before Stop must settle before the engine
+      // graph is stopped. New option commands are rejected by the barrier.
+      await _awaitOptionOperations();
+      try {
+        await _engine.stop();
+      } catch (error, stackTrace) {
+        _applyStopEngineConfirmations(stopEvents);
+        _clearStopTransientState();
+        _setDesiredOptionsToConfirmed();
+        _publishStopFailure(stopEvents, preStopSnapshot);
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+
+      _setDesiredOptionsToBaseline();
+      await _resetEngineOptionsBestEffort();
+      _applyStopEngineConfirmations(stopEvents);
+
+      _clearSuccessfulStopState();
+      _snapshotReducer.commitSnapshot(PlaybackSnapshot.idle);
+      _publishCanonicalStopIdle();
+    } finally {
+      _stopEngineEvents = null;
+    }
+  }
+
+  void _invalidateStopContinuations() {
+    _retryContext = null;
+    _playPauseIntent = null;
+    _pendingSeekConfirmation = null;
+    _pendingEffectiveSequence = null;
+    _pendingEffectiveSequenceGeneration = null;
+    _pendingEffectiveSequenceEpoch = null;
+    _pendingShuffleCandidate = null;
+    _invalidateAllOptionFlights();
+    _commandCoordinator.invalidateSourceDependentCommands();
+  }
+
+  Future<void> _awaitOptionOperations() async {
+    final operations = List<Future<void>>.of(_optionOperations);
+    if (operations.isEmpty) {
+      return;
+    }
+    try {
+      await Future.wait<void>(operations);
+    } catch (_) {
+      // The option command already owns its failure. Stop must still serialize
+      // behind the completed platform Future and continue its cleanup.
+    }
+  }
+
+  Future<void> _resetEngineOptionsBestEffort() async {
+    try {
+      await _engine.setSpeed(PlaybackSnapshot.idle.speed);
+    } catch (_) {
+      // Stop cleanup remains successful; the next load will reapply baseline.
+    }
+    try {
+      await _engine.setLoopMode(just_audio.LoopMode.off);
+    } catch (_) {
+      // Stop cleanup remains successful; the next load will reapply baseline.
+    }
+    try {
+      await _engine.setShuffleEnabled(PlaybackSnapshot.idle.shuffleEnabled);
+    } catch (_) {
+      // Stop cleanup remains successful; the next load will reapply baseline.
+    }
+  }
+
+  void _applyStopEngineConfirmations(_StopEngineEvents events) {
+    final speed = events.confirmedSpeed;
+    if (speed != null) {
+      _lastConfirmedSpeed = speed;
+    }
+    final repeatMode = events.confirmedRepeatMode;
+    if (repeatMode != null) {
+      _lastConfirmedRepeatMode = repeatMode;
+    }
+    final shuffleEnabled = events.confirmedShuffleEnabled;
+    if (shuffleEnabled != null) {
+      _lastConfirmedShuffleEnabled = shuffleEnabled;
+    }
+  }
+
+  void _setDesiredOptionsToBaseline() {
+    _desiredSpeed = PlaybackSnapshot.idle.speed;
+    _desiredSpeedRevision++;
+    _desiredRepeatMode = PlaybackSnapshot.idle.repeatMode;
+    _desiredRepeatRevision++;
+    _desiredShuffleEnabled = PlaybackSnapshot.idle.shuffleEnabled;
+    _desiredShuffleRevision++;
+    _lastAppliedSpeedGeneration = null;
+    _lastAppliedSpeedRevision = null;
+    _lastAppliedRepeatGeneration = null;
+    _lastAppliedRepeatRevision = null;
+  }
+
+  void _setDesiredOptionsToConfirmed() {
+    _desiredSpeed = _lastConfirmedSpeed;
+    _desiredSpeedRevision++;
+    _desiredRepeatMode = _lastConfirmedRepeatMode;
+    _desiredRepeatRevision++;
+    _desiredShuffleEnabled = _lastConfirmedShuffleEnabled;
+    _desiredShuffleRevision++;
+    _lastAppliedSpeedGeneration = null;
+    _lastAppliedSpeedRevision = null;
+    _lastAppliedRepeatGeneration = null;
+    _lastAppliedRepeatRevision = null;
+  }
+
+  void _clearStopTransientState() {
+    _pending = null;
+    _pendingEffectiveSequence = null;
+    _pendingEffectiveSequenceGeneration = null;
+    _pendingEffectiveSequenceEpoch = null;
+    _pendingShuffleCandidate = null;
+    _restoring = null;
+    _activeLoad = null;
+    _retryContext = null;
+    _playPauseIntent = null;
+    _pendingSeekConfirmation = null;
+  }
+
+  void _clearSuccessfulStopState() {
+    _clearStopTransientState();
+    _active = null;
+    _effectiveSequence = const <int>[];
+    _dropUnownedEngineEvents = true;
+    _invalidateAllOptionFlights();
+  }
+
+  void _publishStopFailure(
+    _StopEngineEvents events,
+    PlaybackSnapshot preStopSnapshot,
+  ) {
+    final confirmedState = events.latestPlayerState;
+    if (confirmedState != null) {
+      _snapshotReducer.onPlayerState(confirmedState);
+    }
+
+    final itemId = preStopSnapshot.currentItem?.id;
+    final failure = PlayerFailure(
+      code: 'stopFailed',
+      message: 'Playback stop failed.',
+      isRecoverable: false,
+      itemId: itemId,
+    );
+    _retryContext = null;
+    _reduceAndPublish(
+      () => _snapshotReducer.onFailure(failure, preserveConfirmedPlaying: true),
+    );
+  }
 
   @override
   Future<void> handleSeek(Duration position, CommandSource source) => _runSeek(
@@ -1405,6 +1741,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     required Duration? Function(PlaybackSnapshot snapshot) resolveTarget,
   }) {
     _notifyCommandObserver(command, source);
+
+    if (_commandCoordinator.isStopping) {
+      return _commandNotReady(command, source, notify: false);
+    }
 
     // The reducer is the latest engine-confirmed accumulator. The UI-facing
     // snapshot may intentionally lag behind it while position cadence is
@@ -1709,6 +2049,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     required bool next,
   }) {
     _notifyCommandObserver(command, source);
+
+    if (_commandCoordinator.isStopping) {
+      return _commandNotReady(command, source, notify: false);
+    }
 
     final snapshot = _snapshotReducer.latest;
     final active = _active;
@@ -2192,6 +2536,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       _finishShuffleFlightWithError(flight, error, stackTrace);
       return;
     }
+    _trackOptionOperation(operation);
 
     unawaited(
       operation.then<void>(
@@ -2296,6 +2641,41 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final queued = _queuedShuffleFlight;
     if (queued != null && queued.generation == null) {
       _supersedeShuffleFlight(queued);
+      _queuedShuffleFlight = null;
+    }
+  }
+
+  void _invalidateAllOptionFlights() {
+    final speed = _speedFlight;
+    if (speed != null) {
+      _supersedeSpeedFlight(speed);
+      _speedFlight = null;
+    }
+    final queuedSpeed = _queuedSpeedFlight;
+    if (queuedSpeed != null) {
+      _supersedeSpeedFlight(queuedSpeed);
+      _queuedSpeedFlight = null;
+    }
+
+    final repeat = _repeatFlight;
+    if (repeat != null) {
+      _supersedeRepeatFlight(repeat);
+      _repeatFlight = null;
+    }
+    final queuedRepeat = _queuedRepeatFlight;
+    if (queuedRepeat != null) {
+      _supersedeRepeatFlight(queuedRepeat);
+      _queuedRepeatFlight = null;
+    }
+
+    final shuffle = _shuffleFlight;
+    if (shuffle != null) {
+      _supersedeShuffleFlight(shuffle);
+      _shuffleFlight = null;
+    }
+    final queuedShuffle = _queuedShuffleFlight;
+    if (queuedShuffle != null) {
+      _supersedeShuffleFlight(queuedShuffle);
       _queuedShuffleFlight = null;
     }
   }
@@ -2591,6 +2971,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       _finishRepeatFlightWithError(flight, error, stackTrace);
       return;
     }
+    _trackOptionOperation(operation);
 
     unawaited(
       operation.then<void>(
@@ -2717,6 +3098,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       _finishSpeedFlightWithError(flight, error, stackTrace);
       return;
     }
+    _trackOptionOperation(operation);
 
     unawaited(
       operation.then<void>(
@@ -2799,6 +3181,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   Future<void> handleSetSpeed(double speed, CommandSource source) {
     _notifyCommandObserver('setSpeed', source);
 
+    if (_commandCoordinator.isStopping) {
+      return _commandNotReady('setSpeed', source, notify: false);
+    }
+
     if (!PlayerCommandPolicies.isSpeedInRange(speed)) {
       return _commandInvalidSpeed('setSpeed', source, notify: false);
     }
@@ -2829,6 +3215,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   ) {
     _notifyCommandObserver('setRepeatMode', source);
 
+    if (_commandCoordinator.isStopping) {
+      return _commandNotReady('setRepeatMode', source, notify: false);
+    }
+
     final pending = _currentPendingLoad();
     if (pending != null) {
       return _submitRepeat(mode, generation: pending.generation);
@@ -2852,6 +3242,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   Future<void> handleSetShuffleEnabled(bool enabled, CommandSource source) {
     _notifyCommandObserver('setShuffleEnabled', source);
 
+    if (_commandCoordinator.isStopping) {
+      return _commandNotReady('setShuffleEnabled', source, notify: false);
+    }
+
     final pending = _currentPendingLoad();
     if (pending != null) {
       return _submitShuffle(enabled, generation: pending.generation);
@@ -2874,6 +3268,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   @override
   Future<void> handleRetry(CommandSource source) {
     _notifyCommandObserver('retry', source);
+
+    if (_commandCoordinator.isStopping) {
+      return _commandNotReady('retry', source, notify: false);
+    }
 
     final context = _retryContext;
     final pending = _currentPendingLoad();
@@ -2905,6 +3303,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _playPauseIntent = null;
     _pendingSeekConfirmation = null;
     _invalidateActiveShuffleFlight();
+    _dropUnownedEngineEvents = false;
     final pending = PendingLoadContext.fromItems(
       items: context.targetQueue,
       targetIndex: context.targetIndex,
@@ -3232,6 +3631,18 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     );
   }
 
+  void _trackOptionOperation(Future<void> operation) {
+    _optionOperations.add(operation);
+    unawaited(
+      operation.then<void>(
+        (_) => _optionOperations.remove(operation),
+        onError: (Object _, StackTrace _) {
+          _optionOperations.remove(operation);
+        },
+      ),
+    );
+  }
+
   void _notifyCommandObserver(String command, CommandSource source) {
     try {
       _commandObserver?.call(command, source);
@@ -3289,6 +3700,29 @@ final class _RestoredGraph {
   final List<PlayerItem> effectiveQueue;
   final List<int> effectiveSequence;
   final int currentIndex;
+}
+
+final class _StopEngineEvents {
+  just_audio.PlayerState? latestPlayerState;
+  double? confirmedSpeed;
+  PlayerRepeatMode? confirmedRepeatMode;
+  bool? confirmedShuffleEnabled;
+
+  void onPlayerState(just_audio.PlayerState state) {
+    latestPlayerState = state;
+  }
+
+  void onSpeed(double speed) {
+    confirmedSpeed = speed;
+  }
+
+  void onLoopMode(just_audio.LoopMode mode) {
+    confirmedRepeatMode = PlaybackMappers.fromEngineRepeat(mode);
+  }
+
+  void onShuffleEnabled(bool enabled) {
+    confirmedShuffleEnabled = enabled;
+  }
 }
 
 final class _SeekConfirmation {

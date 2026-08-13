@@ -43,6 +43,10 @@ final class FakePlaybackEngine implements PlaybackEngine {
     this.playAction,
     this.pauseAction,
     this.seekAction,
+    this.stopAction,
+    this.setSpeedAction,
+    this.setLoopModeAction,
+    this.setShuffleEnabledAction,
     this.interruptCompletesLoad = true,
   }) : recorder = recorder ?? PlayerCallRecorder();
 
@@ -50,6 +54,10 @@ final class FakePlaybackEngine implements PlaybackEngine {
   Future<void> Function()? playAction;
   Future<void> Function()? pauseAction;
   Future<void> Function(Duration position, {int? index})? seekAction;
+  Future<void> Function()? stopAction;
+  Future<void> Function(double speed)? setSpeedAction;
+  Future<void> Function(LoopMode mode)? setLoopModeAction;
+  Future<void> Function(bool enabled)? setShuffleEnabledAction;
   final bool interruptCompletesLoad;
 
   final StreamController<PlayerState> _playerStateController =
@@ -181,7 +189,7 @@ final class FakePlaybackEngine implements PlaybackEngine {
   Future<void> stop() {
     _checkNotDisposed();
     recorder.record('stop');
-    return Future<void>.value();
+    return stopAction?.call() ?? Future<void>.value();
   }
 
   @override
@@ -201,14 +209,14 @@ final class FakePlaybackEngine implements PlaybackEngine {
   Future<void> setSpeed(double speed) {
     _checkNotDisposed();
     recorder.record('setSpeed', arguments: <String, Object?>{'speed': speed});
-    return Future<void>.value();
+    return setSpeedAction?.call(speed) ?? Future<void>.value();
   }
 
   @override
   Future<void> setLoopMode(LoopMode mode) {
     _checkNotDisposed();
     recorder.record('setLoopMode', arguments: <String, Object?>{'mode': mode});
-    return Future<void>.value();
+    return setLoopModeAction?.call(mode) ?? Future<void>.value();
   }
 
   @override
@@ -218,7 +226,7 @@ final class FakePlaybackEngine implements PlaybackEngine {
       'setShuffleEnabled',
       arguments: <String, Object?>{'enabled': enabled},
     );
-    return Future<void>.value();
+    return setShuffleEnabledAction?.call(enabled) ?? Future<void>.value();
   }
 
   void emitPlayerState(PlayerState state) {
