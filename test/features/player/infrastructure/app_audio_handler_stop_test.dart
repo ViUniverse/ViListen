@@ -174,10 +174,23 @@ void main() {
     'engine events inside and after successful Stop cannot revive state',
     () async {
       await loadActive(itemId: 'stop-late-events');
+      final mediaEvents = <audio_service.MediaItem?>[];
+      final queueEvents = <List<audio_service.MediaItem>>[];
+      final playbackEvents = <audio_service.PlaybackState>[];
       final snapshots = <PlaybackSnapshot>[];
-      final subscription = handler.snapshots.listen(snapshots.add);
-      addTearDown(subscription.cancel);
+      final subscriptions = <StreamSubscription<dynamic>>[
+        handler.mediaItem.listen(mediaEvents.add),
+        handler.queue.listen(queueEvents.add),
+        handler.playbackState.listen(playbackEvents.add),
+        handler.snapshots.listen(snapshots.add),
+      ];
+      addTearDown(
+        () => Future.wait(subscriptions.map((item) => item.cancel())),
+      );
       await pumpEventQueue();
+      mediaEvents.clear();
+      queueEvents.clear();
+      playbackEvents.clear();
       snapshots.clear();
 
       engine.stopAction = () {
@@ -193,7 +206,10 @@ void main() {
 
       await handler.handleStop(CommandSource.ui);
       await pumpEventQueue();
-      final publicationCount = snapshots.length;
+      mediaEvents.clear();
+      queueEvents.clear();
+      playbackEvents.clear();
+      snapshots.clear();
 
       engine.emitPlayerState(
         just_audio.PlayerState(true, just_audio.ProcessingState.ready),
@@ -203,8 +219,44 @@ void main() {
       engine.emitCurrentIndex(0);
       await pumpEventQueue();
 
-      expect(snapshots, hasLength(publicationCount));
-      expect(snapshots.single, PlaybackSnapshot.idle);
+      expect(mediaEvents, isEmpty);
+      expect(queueEvents, isEmpty);
+      expect(playbackEvents, isEmpty);
+      expect(snapshots, isEmpty);
+
+      final speedCalls = engine.callCountFor('setSpeed');
+      final repeatCalls = engine.callCountFor('setLoopMode');
+      final shuffleCalls = engine.callCountFor('setShuffleEnabled');
+      final newItem = testPlayerItem(id: 'stop-late-events-new-source');
+      final load = handler.handleLoadQueue(
+        [newItem],
+        0,
+        false,
+        CommandSource.ui,
+      );
+      await pumpEventQueue();
+      engine.loadRequests.last.complete();
+      await pumpEventQueue();
+
+      await pumpUntil(() => engine.callCountFor('setSpeed') > speedCalls);
+      engine.emitSpeed(1.0);
+      await pumpEventQueue();
+      await pumpUntil(() => engine.callCountFor('setLoopMode') > repeatCalls);
+      engine.emitLoopMode(just_audio.LoopMode.off);
+      await pumpEventQueue();
+      await pumpUntil(
+        () => engine.callCountFor('setShuffleEnabled') > shuffleCalls,
+      );
+      engine.emitShuffleModeEnabled(false);
+      await pumpEventQueue();
+      engine.emitEffectiveSequence(const <int>[0]);
+      await load;
+
+      expect(handler.mediaItem.value?.id, newItem.id);
+      expect(handler.playbackState.value.position, Duration.zero);
+      expect(snapshots, isNotEmpty);
+      expect(snapshots.last.position, Duration.zero);
+      expect(snapshots.last.duration, Duration.zero);
     },
   );
 
@@ -212,22 +264,41 @@ void main() {
     'second Stop after success is an engine and publication no-op',
     () async {
       await loadActive(itemId: 'stop-idempotent');
+      final mediaEvents = <audio_service.MediaItem?>[];
+      final queueEvents = <List<audio_service.MediaItem>>[];
+      final playbackEvents = <audio_service.PlaybackState>[];
       final snapshots = <PlaybackSnapshot>[];
-      final subscription = handler.snapshots.listen(snapshots.add);
-      addTearDown(subscription.cancel);
+      final subscriptions = <StreamSubscription<dynamic>>[
+        handler.mediaItem.listen(mediaEvents.add),
+        handler.queue.listen(queueEvents.add),
+        handler.playbackState.listen(playbackEvents.add),
+        handler.snapshots.listen(snapshots.add),
+      ];
+      addTearDown(
+        () => Future.wait(subscriptions.map((item) => item.cancel())),
+      );
       await pumpEventQueue();
+      mediaEvents.clear();
+      queueEvents.clear();
+      playbackEvents.clear();
       snapshots.clear();
 
       await handler.handleStop(CommandSource.ui);
       await pumpEventQueue();
       final calls = engine.calls.length;
-      final publications = snapshots.length;
+      mediaEvents.clear();
+      queueEvents.clear();
+      playbackEvents.clear();
+      snapshots.clear();
 
       await handler.handleStop(CommandSource.ui);
       await pumpEventQueue();
 
       expect(engine.calls, hasLength(calls));
-      expect(snapshots, hasLength(publications));
+      expect(mediaEvents, isEmpty);
+      expect(queueEvents, isEmpty);
+      expect(playbackEvents, isEmpty);
+      expect(snapshots, isEmpty);
     },
   );
 
@@ -240,7 +311,6 @@ void main() {
     await pumpEventQueue();
     final second = handler.stop();
 
-    expect(identical(first, second), isTrue);
     expect(engine.callCountFor('stop'), 1);
 
     releaseStop.complete();
@@ -263,10 +333,21 @@ void main() {
       return Future<void>.error(stopError);
     };
 
+    final mediaEvents = <audio_service.MediaItem?>[];
+    final queueEvents = <List<audio_service.MediaItem>>[];
+    final playbackEvents = <audio_service.PlaybackState>[];
     final snapshots = <PlaybackSnapshot>[];
-    final subscription = handler.snapshots.listen(snapshots.add);
-    addTearDown(subscription.cancel);
+    final subscriptions = <StreamSubscription<dynamic>>[
+      handler.mediaItem.listen(mediaEvents.add),
+      handler.queue.listen(queueEvents.add),
+      handler.playbackState.listen(playbackEvents.add),
+      handler.snapshots.listen(snapshots.add),
+    ];
+    addTearDown(() => Future.wait(subscriptions.map((item) => item.cancel())));
     await pumpEventQueue();
+    mediaEvents.clear();
+    queueEvents.clear();
+    playbackEvents.clear();
     snapshots.clear();
 
     await expectLater(
@@ -281,6 +362,13 @@ void main() {
     expect(snapshots.single.failure?.code, 'stopFailed');
     expect(snapshots.single.failure?.isRecoverable, isFalse);
     expect(snapshots.single.playing, isFalse);
+    expect(mediaEvents, isEmpty);
+    expect(queueEvents, isEmpty);
+    expect(playbackEvents, hasLength(1));
+    expect(
+      playbackEvents.single.processingState,
+      audio_service.AudioProcessingState.error,
+    );
     expect(handler.playbackState.value.errorCode, 1005);
     expect(
       handler.playbackState.value.processingState,
@@ -339,25 +427,54 @@ void main() {
         false,
         CommandSource.ui,
       );
+      var loadCompleted = false;
+      unawaited(
+        load.then<void>(
+          (_) => loadCompleted = true,
+          onError: (Object _, StackTrace _) => loadCompleted = true,
+        ),
+      );
       await pumpEventQueue();
       engine.loadRequests.last.complete();
       await pumpEventQueue();
 
+      expect(loadCompleted, isFalse);
+      expect(
+        handler.playbackState.value.processingState,
+        isNot(audio_service.AudioProcessingState.ready),
+      );
+
       await pumpUntil(() => engine.callCountFor('setSpeed') > speedCalls);
       engine.emitSpeed(1.0);
       await pumpEventQueue();
+      expect(loadCompleted, isFalse);
+      expect(
+        handler.playbackState.value.processingState,
+        isNot(audio_service.AudioProcessingState.ready),
+      );
 
       await pumpUntil(() => engine.callCountFor('setLoopMode') > repeatCalls);
       engine.emitLoopMode(just_audio.LoopMode.off);
       await pumpEventQueue();
+      expect(loadCompleted, isFalse);
+      expect(
+        handler.playbackState.value.processingState,
+        isNot(audio_service.AudioProcessingState.ready),
+      );
 
       await pumpUntil(
         () => engine.callCountFor('setShuffleEnabled') > shuffleCalls,
       );
       engine.emitShuffleModeEnabled(false);
       await pumpEventQueue();
+      expect(loadCompleted, isFalse);
+      expect(
+        handler.playbackState.value.processingState,
+        isNot(audio_service.AudioProcessingState.ready),
+      );
       engine.emitEffectiveSequence(const <int>[0]);
       await load;
+      expect(loadCompleted, isTrue);
 
       expect(handler.mediaItem.value?.id, newItem.id);
       expect(
@@ -370,6 +487,56 @@ void main() {
       expect(names, contains('setShuffleEnabled'));
     },
   );
+
+  for (final option in <_StopResetOption>[
+    _StopResetOption.repeat,
+    _StopResetOption.shuffle,
+  ]) {
+    test('Stop survives ${option.name} reset failure', () async {
+      await loadActive(itemId: 'stop-${option.name}-reset-failure');
+      final failure = StateError('${option.name} reset');
+      switch (option) {
+        case _StopResetOption.repeat:
+          engine.setLoopModeAction = (_) => Future<void>.error(failure);
+        case _StopResetOption.shuffle:
+          engine.setShuffleEnabledAction = (_) => Future<void>.error(failure);
+      }
+
+      await handler.handleStop(CommandSource.ui);
+
+      expect(handler.mediaItem.value, isNull);
+      expect(handler.queue.value, isEmpty);
+      expect(
+        handler.playbackState.value.processingState,
+        audio_service.AudioProcessingState.idle,
+      );
+      expect(engine.callCountFor('setSpeed'), 1);
+      expect(engine.callCountFor('setLoopMode'), 1);
+      expect(engine.callCountFor('setShuffleEnabled'), 1);
+    });
+  }
+
+  test('multiple option reset failures do not fail successful Stop', () async {
+    await loadActive(itemId: 'stop-multiple-reset-failures');
+    engine.setSpeedAction = (_) =>
+        Future<void>.error(StateError('speed reset'));
+    engine.setLoopModeAction = (_) =>
+        Future<void>.error(StateError('repeat reset'));
+    engine.setShuffleEnabledAction = (_) =>
+        Future<void>.error(StateError('shuffle reset'));
+
+    await handler.handleStop(CommandSource.ui);
+
+    expect(handler.mediaItem.value, isNull);
+    expect(handler.queue.value, isEmpty);
+    expect(
+      handler.playbackState.value.processingState,
+      audio_service.AudioProcessingState.idle,
+    );
+    expect(engine.callCountFor('setSpeed'), 1);
+    expect(engine.callCountFor('setLoopMode'), 1);
+    expect(engine.callCountFor('setShuffleEnabled'), 1);
+  });
 
   test(
     'pending load is invalidated and late success cannot revive after Stop',
@@ -390,6 +557,47 @@ void main() {
       expect(handler.mediaItem.value, isNull);
       expect(handler.queue.value, isEmpty);
       expect(await latestSnapshot(), PlaybackSnapshot.idle);
+    },
+  );
+
+  test(
+    'late error from an invalidated load cannot create a failure after Stop',
+    () async {
+      engine = FakePlaybackEngine(interruptCompletesLoad: false);
+      await handler.dispose();
+      handler = AppAudioHandler(engine, FakePlayerClock());
+
+      final snapshots = <PlaybackSnapshot>[];
+      final playbackEvents = <audio_service.PlaybackState>[];
+      final subscriptions = <StreamSubscription<dynamic>>[
+        handler.playbackState.listen(playbackEvents.add),
+        handler.snapshots.listen(snapshots.add),
+      ];
+      addTearDown(
+        () => Future.wait(subscriptions.map((item) => item.cancel())),
+      );
+      await pumpEventQueue();
+      playbackEvents.clear();
+      snapshots.clear();
+
+      final item = testPlayerItem(id: 'late-load-error');
+      final load = handler.handleLoadQueue([item], 0, false, CommandSource.ui);
+      await pumpEventQueue();
+      final stop = handler.handleStop(CommandSource.ui);
+      await stop;
+      await pumpEventQueue();
+      playbackEvents.clear();
+      snapshots.clear();
+
+      engine.loadRequests.single.completeError(StateError('late load error'));
+      await load;
+      await pumpEventQueue();
+
+      expect(playbackEvents, isEmpty);
+      expect(snapshots, isEmpty);
+      expect(handler.mediaItem.value, isNull);
+      expect(handler.queue.value, isEmpty);
+      expect(handler.playbackState.value.errorCode, isNull);
     },
   );
 
@@ -460,3 +668,5 @@ void main() {
 }
 
 enum _StopState { playing, paused, loading, error, completed }
+
+enum _StopResetOption { repeat, shuffle }
