@@ -3610,46 +3610,50 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   );
 
   Future<void> dispose() {
-    final disposeFuture = _disposeFuture;
-    if (disposeFuture != null) {
-      return disposeFuture;
+    final existing = _disposeFuture;
+    if (existing != null) {
+      return existing;
     }
 
-    final future = _disposeResources();
-    _disposeFuture = future;
-    return future;
+    final completer = Completer<void>();
+    _disposeFuture = completer.future;
+    _disposed = true;
+
+    unawaited(
+      _disposeResources().then<void>(
+        (_) => completer.complete(),
+        onError: (Object error, StackTrace stackTrace) {
+          completer.completeError(error, stackTrace);
+        },
+      ),
+    );
+
+    return completer.future;
   }
 
   Future<void> _disposeResources() async {
-    _disposed = true;
-    final subscriptions = List<StreamSubscription<dynamic>>.from(
-      _subscriptions,
-    );
+    final subscriptions = List<StreamSubscription<dynamic>>.of(_subscriptions);
+    _subscriptions.clear();
     final projectionSubscriptions =
-        List<StreamSubscription<PlaybackSnapshot>>.from(
-          _projectionSubscriptions,
-        );
+        List<StreamSubscription<PlaybackSnapshot>>.of(_projectionSubscriptions);
+    _projectionSubscriptions.clear();
 
     try {
       await Future.wait<void>(
         subscriptions.map((subscription) => subscription.cancel()),
       );
     } finally {
-      _subscriptions.clear();
       try {
-        await _positionProjector.dispose();
+        await Future.wait<void>(
+          projectionSubscriptions.map((subscription) => subscription.cancel()),
+        );
       } finally {
         try {
-          await _systemTimelineProjector.dispose();
+          await _positionProjector.dispose();
         } finally {
           try {
-            await Future.wait<void>(
-              projectionSubscriptions.map(
-                (subscription) => subscription.cancel(),
-              ),
-            );
+            await _systemTimelineProjector.dispose();
           } finally {
-            _projectionSubscriptions.clear();
             try {
               await _snapshotController.close();
             } finally {
