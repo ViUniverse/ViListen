@@ -4,6 +4,7 @@ import 'dart:async';
 
 import 'package:audio_session/audio_session.dart';
 import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
+import 'package:vi_listen/features/player/infrastructure/player_logger.dart';
 
 /// The normalized audio-session event observed by [InterruptionObserver].
 enum InterruptionObservationKind { begin, end, becomingNoisy }
@@ -38,7 +39,9 @@ final class InterruptionObserver {
     required Stream<void> becomingNoisyEvents,
     required Stream<PlaybackSnapshot> confirmedSnapshots,
     PlaybackSnapshot initialSnapshot = PlaybackSnapshot.idle,
-  }) : _latestConfirmedSnapshot = initialSnapshot {
+    PlayerLogger? logger,
+  }) : _latestConfirmedSnapshot = initialSnapshot,
+       _logger = logger ?? const PlayerLogger.noop() {
     _subscriptions.add(
       confirmedSnapshots.listen(_onConfirmedSnapshot, onError: _onInputError),
     );
@@ -54,6 +57,7 @@ final class InterruptionObserver {
       StreamController<InterruptionObservation>.broadcast(sync: true);
   final List<StreamSubscription<dynamic>> _subscriptions =
       <StreamSubscription<dynamic>>[];
+  final PlayerLogger _logger;
   PlaybackSnapshot _latestConfirmedSnapshot;
   Future<void>? _disposeFuture;
   bool _disposed = false;
@@ -70,27 +74,37 @@ final class InterruptionObserver {
     if (_disposed) {
       return;
     }
-    _observations.add(
-      InterruptionObservation(
-        kind: event.begin
-            ? InterruptionObservationKind.begin
-            : InterruptionObservationKind.end,
-        interruptionType: event.type,
-        latestConfirmedSnapshot: _latestConfirmedSnapshot,
-      ),
+    final observation = InterruptionObservation(
+      kind: event.begin
+          ? InterruptionObservationKind.begin
+          : InterruptionObservationKind.end,
+      interruptionType: event.type,
+      latestConfirmedSnapshot: _latestConfirmedSnapshot,
     );
+    _observations.add(observation);
+    if (event.begin) {
+      _logger.interrupted(
+        type: event.type.name,
+        itemId: observation.latestConfirmedSnapshot.currentItem?.id,
+        positionMs: observation.latestConfirmedSnapshot.position.inMilliseconds,
+      );
+    }
   }
 
   void _onBecomingNoisy(void _) {
     if (_disposed) {
       return;
     }
-    _observations.add(
-      InterruptionObservation(
-        kind: InterruptionObservationKind.becomingNoisy,
-        interruptionType: null,
-        latestConfirmedSnapshot: _latestConfirmedSnapshot,
-      ),
+    final observation = InterruptionObservation(
+      kind: InterruptionObservationKind.becomingNoisy,
+      interruptionType: null,
+      latestConfirmedSnapshot: _latestConfirmedSnapshot,
+    );
+    _observations.add(observation);
+    _logger.interrupted(
+      type: 'becomingNoisy',
+      itemId: observation.latestConfirmedSnapshot.currentItem?.id,
+      positionMs: observation.latestConfirmedSnapshot.position.inMilliseconds,
     );
   }
 

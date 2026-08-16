@@ -26,6 +26,7 @@ import 'package:vi_listen/features/player/infrastructure/periodic_player_clock.d
 import 'package:vi_listen/features/player/infrastructure/player_clock.dart';
 import 'package:vi_listen/features/player/infrastructure/player_failure_mapper.dart';
 import 'package:vi_listen/features/player/infrastructure/player_item_mapper.dart';
+import 'package:vi_listen/features/player/infrastructure/player_logger.dart';
 import 'package:vi_listen/features/player/infrastructure/player_policies.dart';
 import 'package:vi_listen/features/player/infrastructure/player_position_projector.dart';
 import 'package:vi_listen/features/player/infrastructure/system_playback_state_mapper.dart';
@@ -48,10 +49,19 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     PlaybackEngine Function()? engineFactory,
     PlayerClock Function()? clockFactory,
     PlaybackCommandObserver? commandObserver,
+    PlayerLogger? logger,
   }) {
     final createEngine = engineFactory ?? JustAudioPlaybackEngine.new;
     final createClock = clockFactory ?? PeriodicPlayerClock.new;
-    return AppAudioHandler(createEngine(), createClock(), commandObserver);
+    return AppAudioHandler(
+      createEngine(),
+      createClock(),
+      commandObserver,
+      null,
+      null,
+      null,
+      logger,
+    );
   }
 
   AppAudioHandler(
@@ -61,7 +71,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     PlaybackCommandCoordinator? commandCoordinator,
     PlayerFailureMapper? failureMapper,
     PlayerFailurePlatform Function()? failurePlatformResolver,
+    PlayerLogger? logger,
   ]) : _clock = clock ?? PeriodicPlayerClock(),
+       _logger = logger ?? const PlayerLogger.noop(),
        _commandObserver = commandObserver,
        _commandCoordinator = commandCoordinator ?? PlaybackCommandCoordinator(),
        _failureMapper = failureMapper ?? const PlayerFailureMapper(),
@@ -77,6 +89,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
   final PlaybackEngine _engine;
   final PlayerClock _clock;
+  final PlayerLogger _logger;
   final PlaybackCommandObserver? _commandObserver;
   final PlaybackCommandCoordinator _commandCoordinator;
   final PlayerFailureMapper _failureMapper;
@@ -130,6 +143,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   int _effectiveSequenceEpoch = 0;
   int _nextSeekConfirmationSequence = 0;
   _SeekConfirmation? _pendingSeekConfirmation;
+  _ItemChangeProvenance? _pendingItemChangeProvenance;
   int _nextPlayPauseSequence = 0;
   Future<void>? _stopFlight;
   _StopEngineEvents? _stopEngineEvents;
@@ -137,6 +151,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   bool _publishingCanonicalStop = false;
   bool _dropUnownedEngineEvents = false;
   bool _engineEventsFenced = false;
+  _LoadLogContext? _loadLogContext;
+  Duration? _bufferingStartedAt;
+  CommandSource? _pendingPlayPauseSource;
   Future<void>? _disposeFuture;
   bool _disposed = false;
 
@@ -772,7 +789,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       return;
     }
 
+    final previous = _snapshotReducer.latest;
     final reduced = reduce();
+    _observeBufferingTransition(previous, reduced);
     final diff = PlaybackPublicationDiff.between(
       previous: _latestSnapshot,
       current: reduced,
@@ -785,13 +804,76 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _routeImmediate(reduced);
   }
 
-  void _routeImmediate(PlaybackSnapshot snapshot) {
+  void _routeImmediate(
+    PlaybackSnapshot snapshot, {
+    String? itemChangeReason,
+    CommandSource? itemChangeSource,
+  }) {
     if (_disposed) {
       return;
     }
 
+    final previousItemId = _latestSnapshot.currentItem?.id;
+    final currentItemId = snapshot.currentItem?.id;
+    if (previousItemId != currentItemId &&
+        (previousItemId != null || currentItemId != null)) {
+      var reason = itemChangeReason;
+      var source = itemChangeSource;
+      var provenance = _pendingItemChangeProvenance;
+      if (provenance != null &&
+          !_commandCoordinator.isSourceTokenCurrent(provenance.sourceToken)) {
+        _pendingItemChangeProvenance = null;
+        provenance = null;
+      }
+      if (reason == null &&
+          provenance != null &&
+          provenance.newItemId == currentItemId) {
+        reason = provenance.reason;
+        source = provenance.source;
+        _pendingItemChangeProvenance = null;
+      } else if (itemChangeReason != null &&
+          provenance != null &&
+          provenance.newItemId == currentItemId) {
+        _pendingItemChangeProvenance = null;
+      }
+      _logger.itemChanged(
+        oldItemId: previousItemId,
+        newItemId: currentItemId,
+        reason: reason ?? 'engine',
+        source: source,
+      );
+    }
+
     _positionProjector.onImmediate(snapshot);
     _systemTimelineProjector.onImmediate(snapshot);
+  }
+
+  void _observeBufferingTransition(
+    PlaybackSnapshot previous,
+    PlaybackSnapshot current,
+  ) {
+    if (current.isBuffering) {
+      if (!previous.isBuffering && _bufferingStartedAt == null) {
+        _bufferingStartedAt = _clock.elapsed;
+        _logger.bufferingStarted(
+          itemId: current.currentItem?.id ?? previous.currentItem?.id,
+          positionMs: current.position.inMilliseconds,
+        );
+      }
+      return;
+    }
+
+    final startedAt = _bufferingStartedAt;
+    _bufferingStartedAt = null;
+    if (!previous.isBuffering || startedAt == null) {
+      return;
+    }
+
+    final elapsed = _clock.elapsed - startedAt;
+    _logger.bufferingEnded(
+      itemId: current.currentItem?.id ?? previous.currentItem?.id,
+      durationMs: elapsed.isNegative ? 0 : elapsed.inMilliseconds,
+    );
   }
 
   void _publishCanonicalStopIdle() {
@@ -1036,6 +1118,8 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _retryContext = null;
     _playPauseIntent = null;
     _pendingSeekConfirmation = null;
+    _pendingItemChangeProvenance = null;
+    _pendingPlayPauseSource = source;
     _invalidateActiveShuffleFlight();
 
     await _commandCoordinator.load((generation) async {
@@ -1052,6 +1136,15 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
         autoplay: autoplay,
         generation: generation,
       );
+      final loadLogContext = _LoadLogContext(
+        generation: generation,
+        itemId: validatedItems[initialIndex].id,
+        index: initialIndex,
+        reason: 'load',
+        source: source,
+        startedAt: _clock.elapsed,
+      );
+      _loadLogContext = loadLogContext;
       _pending = pending;
       _pendingEffectiveSequence = null;
       _pendingEffectiveSequenceGeneration = null;
@@ -1062,6 +1155,12 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       // the reducer's canonical tuple is already empty. Pending projections
       // stay internal until a later load-commit task confirms this generation.
       _reduceAndPublish(_snapshotReducer.onLoadStarted);
+      _logger.loadStarted(
+        itemId: loadLogContext.itemId,
+        generation: generation.generation,
+        index: initialIndex,
+        source: source,
+      );
 
       final flight = _LoadFlight(generation: generation);
       _activeLoad = flight;
@@ -1111,7 +1210,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
         if (pending.desiredPlaying &&
             _commandCoordinator.isCurrent(generation)) {
-          _startAutoplay(generation);
+          _startAutoplay(generation, source: _pendingPlayPauseSource ?? source);
         }
       } finally {
         if (identical(_activeLoad, flight)) {
@@ -1258,7 +1357,29 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       desiredPlaying: pending.desiredPlaying,
     );
 
-    _routeImmediate(committed);
+    final loadLogContext = _loadLogContext;
+    final currentLoadLog =
+        loadLogContext != null &&
+            loadLogContext.generation == pending.generation
+        ? loadLogContext
+        : null;
+    if (currentLoadLog != null) {
+      final elapsed = _clock.elapsed - currentLoadLog.startedAt;
+      _logger.loadReady(
+        itemId: currentLoadLog.itemId,
+        generation: pending.generation.generation,
+        index: currentLoadLog.index,
+        durationMs: committed.duration.inMilliseconds,
+        latencyMs: elapsed.isNegative ? 0 : elapsed.inMilliseconds,
+        source: currentLoadLog.source,
+      );
+      _loadLogContext = null;
+    }
+    _routeImmediate(
+      committed,
+      itemChangeReason: currentLoadLog?.reason,
+      itemChangeSource: currentLoadLog?.source,
+    );
     _maybeFinalizeShuffleFlight(_shuffleFlight);
   }
 
@@ -1306,6 +1427,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _pendingEffectiveSequenceGeneration = null;
     _pendingEffectiveSequenceEpoch = null;
     _pendingShuffleCandidate = null;
+    if (_loadLogContext?.generation == pending.generation) {
+      _loadLogContext = null;
+    }
     _invalidateSpeedFlightForGeneration(pending.generation);
     _invalidateRepeatFlightForGeneration(pending.generation);
     _invalidateShuffleFlightForGeneration(pending.generation);
@@ -1332,15 +1456,24 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       () =>
           _snapshotReducer.onFailure(failure, preserveConfirmedPlaying: false),
     );
+    _logger.error(
+      code: failure.code,
+      itemId: failure.itemId,
+      recoverable: failure.isRecoverable,
+    );
   }
 
-  void _startAutoplay(LoadGeneration generation) {
+  void _startAutoplay(
+    LoadGeneration generation, {
+    required CommandSource source,
+  }) {
     if (_disposed || !_commandCoordinator.isCurrent(generation)) {
       return;
     }
 
     final playFuture = _requestDesiredPlaying(
       true,
+      source: source,
       platformCall: (_) => _engine.play(),
     );
     unawaited(
@@ -1391,6 +1524,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final pending = _currentPendingLoad();
     if (pending != null) {
       pending.desiredPlaying = true;
+      _pendingPlayPauseSource = source;
       return Future<void>.value();
     }
 
@@ -1417,6 +1551,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
       return _requestDesiredPlaying(
         true,
+        source: source,
         platformCall: (intent) => _runReplay(
           intent,
           item: currentItem,
@@ -1433,7 +1568,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       return Future<void>.value();
     }
 
-    return _requestDesiredPlaying(true, platformCall: (_) => _engine.play());
+    return _requestDesiredPlaying(
+      true,
+      source: source,
+      platformCall: (_) => _engine.play(),
+    );
   }
 
   Future<void> _runReplay(
@@ -1484,6 +1623,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
   Future<void> _requestDesiredPlaying(
     bool desired, {
+    required CommandSource source,
     required Future<void> Function(_PlayPauseIntent intent) platformCall,
   }) {
     final existing = _playPauseIntent;
@@ -1499,6 +1639,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       desired: desired,
       sequence: ++_nextPlayPauseSequence,
       sourceToken: _commandCoordinator.captureSourceToken(),
+      source: source,
     );
     _playPauseIntent = intent;
     _setActiveDesiredPlaying(desired);
@@ -1539,6 +1680,16 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       return;
     }
 
+    final snapshot = _snapshotReducer.latest;
+    final itemId = snapshot.currentItem?.id;
+    if (itemId != null) {
+      final log = intent.desired ? _logger.play : _logger.pause;
+      log(
+        itemId: itemId,
+        positionMs: snapshot.position.inMilliseconds,
+        source: intent.source,
+      );
+    }
     _playPauseIntent = null;
   }
 
@@ -1562,6 +1713,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final pending = _currentPendingLoad();
     if (pending != null) {
       pending.desiredPlaying = false;
+      _pendingPlayPauseSource = source;
       _playPauseIntent = null;
       return Future<void>.value();
     }
@@ -1588,7 +1740,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       }
     }
 
-    return _requestDesiredPlaying(false, platformCall: (_) => _engine.pause());
+    return _requestDesiredPlaying(
+      false,
+      source: source,
+      platformCall: (_) => _engine.pause(),
+    );
   }
 
   @override
@@ -1609,7 +1765,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     }
 
     final operation = _commandCoordinator.stop(
-      (barrier) => _runStopTransaction(barrier),
+      (barrier) => _runStopTransaction(barrier, source: source),
     );
     _stopFlight = operation;
     unawaited(
@@ -1648,7 +1804,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       _optionOperations.isEmpty &&
       !_commandCoordinator.hasGraphWork;
 
-  Future<void> _runStopTransaction(PublicationBarrier _) async {
+  Future<void> _runStopTransaction(
+    PublicationBarrier _, {
+    required CommandSource source,
+  }) async {
     final preStopSnapshot = _snapshotReducer.latest;
     final stopEvents = _StopEngineEvents(_lastEngineSourceGeneration);
     _stopEngineEvents = stopEvents;
@@ -1678,9 +1837,15 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       await _resetEngineOptionsBestEffort();
       _applyStopEngineConfirmations(stopEvents);
 
+      _observeBufferingTransition(preStopSnapshot, PlaybackSnapshot.idle);
       _clearSuccessfulStopState();
       _snapshotReducer.commitSnapshot(PlaybackSnapshot.idle);
       _publishCanonicalStopIdle();
+      _logger.stopped(
+        itemId: preStopSnapshot.currentItem?.id,
+        reason: _stopReason(source),
+        source: source,
+      );
     } finally {
       _stopEngineEvents = null;
     }
@@ -1690,6 +1855,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _retryContext = null;
     _playPauseIntent = null;
     _pendingSeekConfirmation = null;
+    _pendingItemChangeProvenance = null;
+    _loadLogContext = null;
+    _pendingPlayPauseSource = null;
     _pendingEffectiveSequence = null;
     _pendingEffectiveSequenceGeneration = null;
     _pendingEffectiveSequenceEpoch = null;
@@ -1812,6 +1980,11 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _reduceAndPublish(
       () => _snapshotReducer.onFailure(failure, preserveConfirmedPlaying: true),
     );
+    _logger.error(
+      code: failure.code,
+      itemId: failure.itemId,
+      recoverable: failure.isRecoverable,
+    );
   }
 
   @override
@@ -1880,8 +2053,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
     final confirmation = _SeekConfirmation(
       sequence: ++_nextSeekConfirmationSequence,
+      from: snapshot.position,
       target: target,
       sourceToken: _commandCoordinator.captureSourceToken(),
+      source: source,
     );
     _pendingSeekConfirmation = confirmation;
     return _seekEngineTarget(confirmation);
@@ -1890,6 +2065,13 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   Future<void> _seekEngineTarget(_SeekConfirmation confirmation) async {
     try {
       await _engine.seek(confirmation.target);
+      if (_commandCoordinator.isSourceTokenCurrent(confirmation.sourceToken)) {
+        _logger.seek(
+          fromMs: confirmation.from.inMilliseconds,
+          toMs: confirmation.target.inMilliseconds,
+          source: confirmation.source,
+        );
+      }
     } catch (error, stackTrace) {
       if (identical(_pendingSeekConfirmation, confirmation)) {
         _pendingSeekConfirmation = null;
@@ -1909,7 +2091,15 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   void _prepareNavigation() {
     _playPauseIntent = null;
     _pendingSeekConfirmation = null;
+    _pendingItemChangeProvenance = null;
+    _loadLogContext = null;
     _invalidateActiveShuffleFlight();
+  }
+
+  void _clearNavigationProvenance(PlaybackSourceToken sourceToken) {
+    if (_pendingItemChangeProvenance?.sourceToken == sourceToken) {
+      _pendingItemChangeProvenance = null;
+    }
   }
 
   int _activeLogicalIndex(
@@ -2039,8 +2229,10 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   void _publishRestoredActiveState(
     ActivePlaybackContext active,
     PlaybackSnapshot snapshot,
-    int currentIndex,
-  ) {
+    int currentIndex, {
+    required String itemChangeReason,
+    required CommandSource itemChangeSource,
+  }) {
     _snapshotReducer.commitQueue(
       active.effectiveQueue,
       currentIndex: currentIndex,
@@ -2049,12 +2241,17 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final ready = _snapshotReducer.onPlayerState(
       just_audio.PlayerState(false, just_audio.ProcessingState.ready),
     );
-    _routeImmediate(ready);
+    _routeImmediate(
+      ready,
+      itemChangeReason: itemChangeReason,
+      itemChangeSource: itemChangeSource,
+    );
   }
 
   void _resumeRestoredPlayback(
     ActivePlaybackContext active,
     PlaybackSourceToken sourceToken,
+    CommandSource source,
   ) {
     if (!active.desiredPlaying) {
       return;
@@ -2062,6 +2259,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
     final play = _requestDesiredPlaying(
       true,
+      source: source,
       platformCall: (_) => _engine.play(),
     );
     unawaited(
@@ -2089,6 +2287,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _pendingEffectiveSequence = null;
     _pendingEffectiveSequenceGeneration = null;
     _pendingEffectiveSequenceEpoch = null;
+    if (_loadLogContext?.generation == expected.generation) {
+      _loadLogContext = null;
+    }
   }
 
   Future<void> _runNavigationTransaction({
@@ -2098,65 +2299,78 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     required bool restartCurrent,
     required int? logicalIndex,
     required PlaybackSourceToken sourceToken,
+    required String itemChangeReason,
+    required CommandSource itemChangeSource,
   }) async {
-    if (!_commandCoordinator.isSourceTokenCurrent(sourceToken) ||
-        !identical(_pending, pending)) {
-      return;
-    }
-
-    _engineEventsFenced = false;
-    ActivePlaybackContext? restoredActive;
-    if (pending != null) {
-      final committedActive = active;
-      if (committedActive == null) {
-        return;
-      }
-
-      final restored = await _restoreActiveGraph(
-        committedActive,
-        snapshot,
-        sourceToken,
-      );
-      if (restored == null ||
-          !_commandCoordinator.isSourceTokenCurrent(sourceToken) ||
+    var retainProvenance = false;
+    try {
+      if (!_commandCoordinator.isSourceTokenCurrent(sourceToken) ||
           !identical(_pending, pending)) {
         return;
       }
 
-      _effectiveSequence = restored.effectiveSequence;
-      restoredActive = ActivePlaybackContext(
-        logicalQueue: committedActive.logicalQueue,
-        effectiveQueue: restored.effectiveQueue,
-        currentIndex: restored.currentIndex,
-        position: snapshot.position,
-        desiredPlaying: committedActive.desiredPlaying,
-      );
-      _active = restoredActive;
-      _publishRestoredActiveState(
-        restoredActive,
-        snapshot,
-        restored.currentIndex,
-      );
-      // The pending context has absorbed the interrupt and restore events.
-      // Clear it only after the committed graph is back and immediately
-      // before the optional navigation seek.
-      _clearPendingNavigationContext(pending);
-    }
+      _engineEventsFenced = false;
+      ActivePlaybackContext? restoredActive;
+      if (pending != null) {
+        final committedActive = active;
+        if (committedActive == null) {
+          return;
+        }
 
-    if (!_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
-      return;
-    }
-    if (!restartCurrent && logicalIndex != null) {
-      await _engine.seek(Duration.zero, index: logicalIndex);
-    } else if (restartCurrent) {
-      await _engine.seek(Duration.zero);
-    }
+        final restored = await _restoreActiveGraph(
+          committedActive,
+          snapshot,
+          sourceToken,
+        );
+        if (restored == null ||
+            !_commandCoordinator.isSourceTokenCurrent(sourceToken) ||
+            !identical(_pending, pending)) {
+          return;
+        }
 
-    if (!_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
-      return;
-    }
-    if (restoredActive != null) {
-      _resumeRestoredPlayback(restoredActive, sourceToken);
+        _effectiveSequence = restored.effectiveSequence;
+        restoredActive = ActivePlaybackContext(
+          logicalQueue: committedActive.logicalQueue,
+          effectiveQueue: restored.effectiveQueue,
+          currentIndex: restored.currentIndex,
+          position: snapshot.position,
+          desiredPlaying: committedActive.desiredPlaying,
+        );
+        _active = restoredActive;
+        _publishRestoredActiveState(
+          restoredActive,
+          snapshot,
+          restored.currentIndex,
+          itemChangeReason: itemChangeReason,
+          itemChangeSource: itemChangeSource,
+        );
+        // The pending context has absorbed the interrupt and restore events.
+        // Clear it only after the committed graph is back and immediately
+        // before the optional navigation seek.
+        _clearPendingNavigationContext(pending);
+      }
+
+      if (!_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
+        return;
+      }
+      if (!restartCurrent && logicalIndex != null) {
+        await _engine.seek(Duration.zero, index: logicalIndex);
+      } else if (restartCurrent) {
+        await _engine.seek(Duration.zero);
+      }
+
+      if (!_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
+        return;
+      }
+      retainProvenance =
+          _pendingItemChangeProvenance?.sourceToken == sourceToken;
+      if (restoredActive != null) {
+        _resumeRestoredPlayback(restoredActive, sourceToken, itemChangeSource);
+      }
+    } finally {
+      if (!retainProvenance) {
+        _clearNavigationProvenance(sourceToken);
+      }
     }
   }
 
@@ -2251,7 +2465,15 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     final logicalIndex = restartCurrent || targetIndex == null
         ? null
         : sequence[targetIndex];
-    return _commandCoordinator.switchSourceIndex(
+    if (!restartCurrent && targetIndex != null) {
+      _pendingItemChangeProvenance = _ItemChangeProvenance(
+        newItemId: effectiveQueue[targetIndex].id,
+        reason: command,
+        source: source,
+        sourceToken: sourceToken,
+      );
+    }
+    final operation = _commandCoordinator.switchSourceIndex(
       () => _runNavigationTransaction(
         snapshot: snapshot,
         active: active,
@@ -2259,10 +2481,25 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
         restartCurrent: restartCurrent,
         logicalIndex: logicalIndex,
         sourceToken: sourceToken,
+        itemChangeReason: command,
+        itemChangeSource: source,
       ),
       interrupt: _interruptCurrentLoad,
       sourceToken: sourceToken,
     );
+    unawaited(
+      operation.then<void>(
+        (_) {
+          if (!_commandCoordinator.isSourceTokenCurrent(sourceToken)) {
+            _clearNavigationProvenance(sourceToken);
+          }
+        },
+        onError: (Object _, StackTrace _) {
+          _clearNavigationProvenance(sourceToken);
+        },
+      ),
+    );
+    return operation;
   }
 
   Future<void> _preparePendingSpeed(
@@ -3404,7 +3641,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
     return _commandCoordinator.retry(
       context,
-      (generation) => _runRetryTransaction(context, generation),
+      (generation) => _runRetryTransaction(context, generation, source),
       interrupt: _interruptCurrentLoad,
     );
   }
@@ -3412,6 +3649,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   Future<void> _runRetryTransaction(
     RetryContext context,
     LoadGeneration generation,
+    CommandSource source,
   ) async {
     if (_disposed || !identical(_retryContext, context)) {
       return;
@@ -3419,6 +3657,8 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
 
     _playPauseIntent = null;
     _pendingSeekConfirmation = null;
+    _pendingItemChangeProvenance = null;
+    _pendingPlayPauseSource = source;
     _invalidateActiveShuffleFlight();
     _engineEventsFenced = false;
     _dropUnownedEngineEvents = false;
@@ -3431,12 +3671,27 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     // The engine load is always prepare-only. This is the mutable intent that
     // Play/Pause may update while retry work is pending.
     pending.desiredPlaying = context.desiredPlaying;
+    final loadLogContext = _LoadLogContext(
+      generation: generation,
+      itemId: context.failureItemId,
+      index: context.targetIndex,
+      reason: 'retry',
+      source: source,
+      startedAt: _clock.elapsed,
+    );
+    _loadLogContext = loadLogContext;
     _pending = pending;
     _pendingEffectiveSequence = null;
     _pendingEffectiveSequenceGeneration = null;
     _pendingEffectiveSequenceEpoch = null;
     _pendingShuffleCandidate = null;
     _reduceAndPublish(_snapshotReducer.onLoadStarted);
+    _logger.loadStarted(
+      itemId: loadLogContext.itemId,
+      generation: generation.generation,
+      index: loadLogContext.index,
+      source: source,
+    );
 
     final flight = _LoadFlight(generation: generation);
     _activeLoad = flight;
@@ -3493,7 +3748,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       }
       _retryContext = null;
       if (pending.desiredPlaying) {
-        _startAutoplay(generation);
+        _startAutoplay(generation, source: _pendingPlayPauseSource ?? source);
       }
     } catch (error, stackTrace) {
       if (_isCurrentRetryAttempt(context, pending, generation)) {
@@ -3773,6 +4028,44 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       // Observability must not change the command's typed failure contract.
     }
   }
+
+  static String _stopReason(CommandSource source) => switch (source) {
+    CommandSource.ui => 'user',
+    CommandSource.systemRemote => 'remote',
+    CommandSource.interruption => 'interruption',
+  };
+}
+
+final class _LoadLogContext {
+  const _LoadLogContext({
+    required this.generation,
+    required this.itemId,
+    required this.index,
+    required this.reason,
+    required this.source,
+    required this.startedAt,
+  });
+
+  final LoadGeneration generation;
+  final String itemId;
+  final int index;
+  final String reason;
+  final CommandSource source;
+  final Duration startedAt;
+}
+
+final class _ItemChangeProvenance {
+  const _ItemChangeProvenance({
+    required this.newItemId,
+    required this.reason,
+    required this.source,
+    required this.sourceToken,
+  });
+
+  final String newItemId;
+  final String reason;
+  final CommandSource source;
+  final PlaybackSourceToken sourceToken;
 }
 
 final class _LoadFlight {
@@ -3866,13 +4159,17 @@ final class _StopEngineEvents {
 final class _SeekConfirmation {
   const _SeekConfirmation({
     required this.sequence,
+    required this.from,
     required this.target,
     required this.sourceToken,
+    required this.source,
   });
 
   final int sequence;
+  final Duration from;
   final Duration target;
   final PlaybackSourceToken sourceToken;
+  final CommandSource source;
 }
 
 final class _PlayPauseIntent {
@@ -3880,11 +4177,13 @@ final class _PlayPauseIntent {
     required this.desired,
     required this.sequence,
     required this.sourceToken,
+    required this.source,
   });
 
   final bool desired;
   final int sequence;
   final PlaybackSourceToken sourceToken;
+  final CommandSource source;
   Future<void>? operation;
   bool dispatched = false;
 }
