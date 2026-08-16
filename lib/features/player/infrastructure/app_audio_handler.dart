@@ -136,6 +136,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   int _lastEngineSourceGeneration = 0;
   bool _publishingCanonicalStop = false;
   bool _dropUnownedEngineEvents = false;
+  bool _engineEventsFenced = false;
   Future<void>? _disposeFuture;
   bool _disposed = false;
 
@@ -176,6 +177,9 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _onEngineEvent(PlaybackEngineEvent event) {
+    if (!_commandCoordinator.isStopping && _engineEventsFenced) {
+      return;
+    }
     if (!_commandCoordinator.isStopping &&
         _isEngineEventForCurrentSource(event.sourceGeneration)) {
       _lastEngineSourceGeneration = event.sourceGeneration;
@@ -1040,6 +1044,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       }
 
       _rememberActiveContext();
+      _engineEventsFenced = false;
       _dropUnownedEngineEvents = false;
       final pending = PendingLoadContext.fromItems(
         items: validatedItems,
@@ -1658,6 +1663,12 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       } catch (error, stackTrace) {
         _applyStopEngineConfirmations(stopEvents);
         _clearStopTransientState();
+        // A failed Stop invalidates a pending-only source. Do not let its
+        // late engine events fall through the no-owner path and revive state.
+        // Even when an active source remains owned for metadata retention,
+        // late events from the pre-Stop epoch must stay fenced.
+        _engineEventsFenced = true;
+        _dropUnownedEngineEvents = _active == null;
         _setDesiredOptionsToConfirmed();
         _publishStopFailure(stopEvents, preStopSnapshot);
         Error.throwWithStackTrace(error, stackTrace);
@@ -2093,6 +2104,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
       return;
     }
 
+    _engineEventsFenced = false;
     ActivePlaybackContext? restoredActive;
     if (pending != null) {
       final committedActive = active;
@@ -3408,6 +3420,7 @@ final class AppAudioHandler extends audio_service.BaseAudioHandler
     _playPauseIntent = null;
     _pendingSeekConfirmation = null;
     _invalidateActiveShuffleFlight();
+    _engineEventsFenced = false;
     _dropUnownedEngineEvents = false;
     final pending = PendingLoadContext.fromItems(
       items: context.targetQueue,

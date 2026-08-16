@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart' as just_audio;
 import 'package:vi_listen/features/player/domain/player_command_failure.dart';
 import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
+import 'package:vi_listen/features/player/domain/playback_processing_state.dart';
 import 'package:vi_listen/features/player/domain/player_item.dart';
 import 'package:vi_listen/features/player/infrastructure/app_audio_handler.dart';
 import 'package:vi_listen/features/player/infrastructure/command_source.dart';
@@ -334,6 +335,117 @@ void main() {
     expect(handler.queue.value, isNotEmpty);
     expect((await latestSnapshot()).failure?.code, 'stopFailed');
     expect(handler.playbackState.value.errorCode, 1005);
+  });
+
+  test(
+    'failed Stop drops late events from an invalidated initial load',
+    () async {
+      await handler.dispose();
+      engine = FakePlaybackEngine(interruptCompletesLoad: false);
+      handler = AppAudioHandler(engine, FakePlayerClock());
+
+      final item = testPlayerItem(id: 'stop-failed-pending-initial-load');
+      final load = handler.handleLoadQueue([item], 0, false, CommandSource.ui);
+      await pumpEventQueue();
+
+      final stopError = StateError('stop failed during initial load');
+      engine.stopAction = () => Future<void>.error(stopError);
+      await expectLater(
+        handler.handleStop(CommandSource.ui),
+        throwsA(same(stopError)),
+      );
+
+      engine.emitPlayerState(
+        just_audio.PlayerState(true, just_audio.ProcessingState.ready),
+      );
+      engine.emitPosition(const Duration(seconds: 12));
+      engine.emitDuration(const Duration(minutes: 3));
+      engine.emitCurrentIndex(0);
+      engine.loadRequests.single.complete();
+      await load;
+      await pumpEventQueue();
+
+      final snapshot = await latestSnapshot();
+      expect(snapshot.failure?.code, 'stopFailed');
+      expect(snapshot.processingState, PlaybackProcessingState.error);
+      expect(snapshot.playing, isFalse);
+      expect(snapshot.currentItem, isNull);
+      expect(snapshot.queue, isEmpty);
+      expect(handler.mediaItem.value, isNull);
+      expect(handler.queue.value, isEmpty);
+    },
+  );
+
+  test(
+    'failed Stop fences late events from the retained active source',
+    () async {
+      await loadActive(itemId: 'stop-failed-active-source');
+
+      final stopError = StateError('stop failed with active source');
+      engine.stopAction = () => Future<void>.error(stopError);
+      await expectLater(
+        handler.handleStop(CommandSource.ui),
+        throwsA(same(stopError)),
+      );
+
+      engine.emitPlayerState(
+        just_audio.PlayerState(true, just_audio.ProcessingState.ready),
+        sourceGeneration: 1,
+      );
+      await pumpEventQueue();
+
+      final snapshot = await latestSnapshot();
+      expect(snapshot.failure?.code, 'stopFailed');
+      expect(snapshot.processingState, PlaybackProcessingState.error);
+      expect(snapshot.playing, isFalse);
+      expect(snapshot.currentItem?.id, 'stop-failed-active-source');
+    },
+  );
+
+  test('failed Stop fences late events from active A and pending B', () async {
+    await handler.dispose();
+    engine = FakePlaybackEngine(interruptCompletesLoad: false);
+    handler = AppAudioHandler(engine, FakePlayerClock());
+
+    await loadActive(itemId: 'stop-failed-active-a');
+    final loadB = handler.handleLoadQueue(
+      [testPlayerItem(id: 'stop-failed-pending-b')],
+      0,
+      false,
+      CommandSource.ui,
+    );
+    await pumpEventQueue();
+
+    final stopError = StateError('stop failed with active and pending source');
+    engine.stopAction = () => Future<void>.error(stopError);
+    await expectLater(
+      handler.handleStop(CommandSource.ui),
+      throwsA(same(stopError)),
+    );
+
+    engine.emitPlayerState(
+      just_audio.PlayerState(true, just_audio.ProcessingState.ready),
+      sourceGeneration: 1,
+    );
+    engine.emitPosition(const Duration(seconds: 11), sourceGeneration: 1);
+    engine.emitPlayerState(
+      just_audio.PlayerState(true, just_audio.ProcessingState.ready),
+      sourceGeneration: 2,
+    );
+    engine.emitPosition(const Duration(seconds: 22), sourceGeneration: 2);
+    engine.loadRequests.last.complete();
+    await loadB;
+    await pumpEventQueue();
+
+    final snapshot = await latestSnapshot();
+    expect(snapshot.failure?.code, 'stopFailed');
+    expect(snapshot.processingState, PlaybackProcessingState.error);
+    expect(snapshot.currentItem?.id, 'stop-failed-active-a');
+    expect(snapshot.queue.map((item) => item.id), ['stop-failed-active-a']);
+    expect(handler.mediaItem.value?.id, 'stop-failed-active-a');
+    expect(handler.queue.value.map((item) => item.id), [
+      'stop-failed-active-a',
+    ]);
   });
 
   test(
