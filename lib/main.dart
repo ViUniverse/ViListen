@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:vi_listen/app/player_bootstrap.dart';
 import 'package:vi_listen/features/home/presentation/home_screen.dart';
-import 'package:vi_listen/features/player/presentation/cubit/player_cubit.dart';
 
-void main() => runApp(
-  BlocProvider(create: (_) => LegacyPlayerCubit(), child: const MyApp()),
-);
+Future<void> main() async {
+  await startPlayerApplication(app: const MyApp());
+}
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});

@@ -88,8 +88,9 @@ Với task native/platform, chạy thêm build hoặc smoke test đúng nền t�
 
 ## 4. Các contract đã khóa trước khi triển khai
 
-PLR-001–009 và PLR-014–016 đã được Accepted v1 ngày 2026-08-02 trong
-[Player Architecture Decisions](./player-architecture-decisions.md). ADR là
+PLR-001–009 và PLR-014–016 đã được Accepted trong
+[Player Architecture Decisions](./player-architecture-decisions.md); PLR-007
+đã được revision lên v2 ngày 2026-08-19. ADR là
 normative; các mô tả dưới đây là acceptance summary để nối quyết định với task và
 test, không phải một nguồn policy độc lập.
 
@@ -263,12 +264,16 @@ decision version và đồng bộ ADR cùng bốn projection trong cùng thay đ
 
 ### PLR-007 — Khóa bootstrap, OS error và Android service policy ⚠️ `[MANUAL:DECISION]`
 
-- Trạng thái: Accepted v1; document sync hoàn tất 2026-08-02.
+- Trạng thái: Accepted v2; document sync hoàn tất 2026-08-19.
 - Contract:
-  - Development/test bootstrap failure fail-fast với original stack; production
-    inject `UnavailablePlaybackGateway` không engine, phát
-    `bootstrapUnavailable`, mọi command trả `commandUnavailable`.
-  - Tuyệt đối không tạo handler/player thứ hai và không retry bootstrap ngầm.
+  - Failure trước khi `AudioService.init` gọi handler builder:
+    development/test fail-fast với original stack; production inject
+    `UnavailablePlaybackGateway` không engine, phát `bootstrapUnavailable`,
+    mọi command trả `commandUnavailable`.
+  - Failure sau khi handler builder đã chạy, kể cả
+    `AudioSession.configure` failure, fail-fast ở mọi mode với original stack.
+  - Tuyệt đối không tạo handler/player thứ hai, không retry bootstrap ngầm và
+    không gọi `runApp` sau post-handler failure.
   - OS error dùng `AudioProcessingState.error`, `playing=false`, sanitized
     message và stable code: network/load `1001`, source not found `1002`,
     unsupported format `1003`, audio output `1004`, stop failed `1005`, unknown
@@ -1650,23 +1655,31 @@ flutter analyze
 - Test:
   - Với seam bootstrap, assert call order.
   - Handler/Cubit/player/UI-gateway-adapter cardinality mỗi loại bằng một.
-  - Dev/test bootstrap failure rethrow original error/stack.
-  - Production bootstrap failure inject `UnavailablePlaybackGateway`, phát
-    `bootstrapUnavailable`, command trả `commandUnavailable` và engine/player
-    creation count sau failure bằng zero; không retry ngầm.
+  - Pre-handler dev/test bootstrap failure rethrow original error/stack.
+  - Pre-handler production bootstrap failure inject
+    `UnavailablePlaybackGateway`, phát `bootstrapUnavailable`, command trả
+    `commandUnavailable` và engine/player creation count bằng zero; không retry
+    ngầm.
+  - Failure sau khi handler builder đã chạy, hoặc khi
+    `AudioSession.configure` fail, rethrow original error/stack ở mọi mode;
+    không `runApp`, không tạo handler/player thứ hai.
+  - Composition root tạm cung cấp cả target `PlayerCubit` và
+    `LegacyPlayerCubit` để `PlayerHost`/`MiniPlayer` hiện tại vẫn resolve được;
+    bridge này được dọn tại PLR-110.
 
-### PLR-091 — Tạo dual-provider migration bridge `[CODE]` `[WIDGET]`
+### PLR-091 — Kiểm chứng và hardening dual-provider migration bridge `[CODE]` `[WIDGET]`
 
 - Phụ thuộc: PLR-016, PLR-029, PLR-090.
 - Files:
-  - `lib/main.dart`
+  - `lib/app/player_bootstrap.dart`
   - `test/app/player_provider_bridge_test.dart`
 - Thực hiện:
-  - Cung cấp target `PlayerCubit` phía trên `MaterialApp`/app shell.
-  - Tạm tiếp tục cung cấp `LegacyPlayerCubit` để widget chưa migrate vẫn build.
-  - Cả hai provider không được sở hữu engine; target Cubit dùng cùng một handler,
-    legacy Cubit chỉ giữ fake state cũ.
-  - Gắn TODO bắt buộc xóa ở PLR-110.
+  - Kiểm chứng bridge target `PlayerCubit` + `LegacyPlayerCubit` đã được
+    PLR-090 cung cấp phía trên `MaterialApp`/app shell; không tạo thêm provider
+    thứ hai ở task này.
+  - Hardening ownership: cả hai provider không được sở hữu engine; target Cubit
+    dùng cùng gateway/handler của PLR-090, legacy Cubit chỉ giữ fake state cũ.
+  - Giữ TODO bắt buộc xóa bridge ở PLR-110.
 - Test:
   - Cả widget legacy và target resolve đúng provider trong migration.
   - Widget rebuild không tạo engine/handler mới.
@@ -1698,7 +1711,8 @@ flutter analyze
   - Test support files.
 - Thực hiện:
   - Inject target `PlayerCubit(FakePlaybackGateway)` cùng
-    `LegacyPlayerCubit` qua migration bridge PLR-091.
+    `LegacyPlayerCubit` qua migration bridge PLR-090, với các invariant đã được
+    harden ở PLR-091.
   - Target fake snapshot là idle nhưng legacy `PlayerHost` vẫn được phép giữ
     baseline UI cho đến PLR-101.
   - Chỉ đổi harness/provider ở task này; chưa đổi expectation mini/progress cũ.
@@ -2406,7 +2420,7 @@ Không bắt buộc giữ đúng sáu PR lớn. Khuyến nghị mỗi PR chỉ c
 - [x] PLR-004 — Canonical Stop ordering Accepted v1 ngày 2026-08-02. `⚠️ [MANUAL:DECISION]`
 - [x] PLR-005 — Interruption/becoming-noisy Accepted v1 ngày 2026-08-02. `⚠️ [MANUAL:DECISION]`
 - [x] PLR-006 — Handler test seam Accepted v1 ngày 2026-08-02. `⚠️ [MANUAL:DECISION]`
-- [x] PLR-007 — Bootstrap/OS error/Android service Accepted v1 ngày 2026-08-02. `⚠️ [MANUAL:DECISION]`
+- [x] PLR-007 — Bootstrap/OS error/Android service Accepted v2 ngày 2026-08-19. `⚠️ [MANUAL:DECISION]`
 - [x] PLR-008 — Command-validity/rapid intent Accepted v1 ngày 2026-08-02. `⚠️ [MANUAL:DECISION]`
 - [x] PLR-009 — Active/pending load semantics Accepted v1 ngày 2026-08-02. `⚠️ [MANUAL:DECISION]`
 - [x] PLR-014 — Queue/shuffle/navigation semantics Accepted v1 ngày 2026-08-02. `⚠️ [MANUAL:DECISION]`
@@ -2477,7 +2491,8 @@ Các lỗi phát hiện qua lịch sử rà soát và đã được đóng ở l
 - Handler thiếu engine/clock/publication test seam.
 - Remote Stop và app lifecycle thiếu dependency/test.
 - Policy command/load/retry/shuffle/Stop/logging trước đây chưa khóa; nay đã
-  Accepted v1 tại PLR-001–009 và PLR-014–016.
+  Accepted tại PLR-001–009 và PLR-014–016, với PLR-007 được revision lên v2
+  ngày 2026-08-19.
 - Gateway/Handler/Engine ownership, completed playing state, Retry ordering,
   Stop failure/barrier, active/pending context và OS cadence từng khác nhau giữa
   các projection.

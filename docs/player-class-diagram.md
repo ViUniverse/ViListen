@@ -1049,8 +1049,12 @@ class UnavailablePlaybackGateway {
   <<production degraded gateway; no engine>>
 }
 
-class BlocProvider {
+class MultiBlocProvider {
   <<flutter_bloc>>
+}
+
+class LegacyPlayerCubit {
+  <<migration-only Cubit>>
 }
 
 class MyApp {
@@ -1064,12 +1068,13 @@ AudioService ..> AppAudioHandler : builder creates
 MainCompositionRoot ..> UiPlaybackGatewayAdapter : wraps handler
 UiPlaybackGatewayAdapter ..|> PlaybackGateway
 UiPlaybackGatewayAdapter ..> AppAudioHandler : internal target
-MainCompositionRoot ..> UnavailablePlaybackGateway : only on production bootstrap failure
+MainCompositionRoot ..> UnavailablePlaybackGateway : only on pre-handler production failure
 UnavailablePlaybackGateway ..|> PlaybackGateway
 MainCompositionRoot ..> PlayerCubit : injects PlaybackGateway
-MainCompositionRoot ..> BlocProvider : provides Cubit
-BlocProvider *-- PlayerCubit
-BlocProvider *-- MyApp
+MainCompositionRoot ..> MultiBlocProvider : provides target + legacy Cubits
+MultiBlocProvider *-- PlayerCubit
+MultiBlocProvider *-- LegacyPlayerCubit
+MultiBlocProvider *-- MyApp
 ```
 
 Bootstrap order:
@@ -1080,7 +1085,7 @@ WidgetsFlutterBinding.ensureInitialized()
 → AudioSession.configure(speech)
 → UiPlaybackGatewayAdapter(AppAudioHandler)
 → PlayerCubit(PlaybackGateway)
-→ BlocProvider
+→ MultiBlocProvider(PlayerCubit + LegacyPlayerCubit)
 → runApp(MyApp)
 ```
 
@@ -1583,13 +1588,13 @@ Navigator sở hữu route. Playback state chỉ mô tả audio.
 | JustAudioPlaybackEngine | <code>lib/features/player/infrastructure/engine/just_audio_playback_engine.dart</code> | Chưa có |
 | Active/Pending/Retry contexts | <code>lib/features/player/infrastructure/playback_contexts.dart</code> | Chưa có |
 | AppAudioHandler | <code>lib/features/player/infrastructure/app_audio_handler.dart</code> | Chưa có |
-| UnavailablePlaybackGateway | <code>lib/features/player/infrastructure/unavailable_playback_gateway.dart</code> | Chưa có |
+| UnavailablePlaybackGateway | <code>lib/features/player/infrastructure/unavailable_playback_gateway.dart</code> | Đã có PLR-090 |
 | LegacyPlayerCubit/State | <code>lib/features/player/presentation/cubit/player_cubit.dart</code> | Rename tạm, xóa tại PLR-110 |
 | PlayerHost | <code>lib/features/player/presentation/widgets/player_host.dart</code> | Cần bỏ presentation state |
 | MiniPlayer | <code>lib/features/player/presentation/widgets/mini_player.dart</code> | Cần bỏ hard-code |
 | PlayerControlDock | <code>lib/features/player/presentation/widgets/player_control_dock.dart</code> | Cần dùng Duration thật |
 | ExpandedPlayerScreen | <code>lib/features/player/presentation/expanded_player_screen.dart</code> | Giữ gesture/layout, bind state thật |
-| Composition root | <code>lib/main.dart</code> | Cần async bootstrap |
+| Composition root | <code>lib/main.dart</code> | Đã có PLR-090; target + temporary legacy provider bridge; cleanup tại PLR-110 |
 
 ## 18. Review Checklist cho Class Design
 

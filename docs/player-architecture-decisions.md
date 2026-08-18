@@ -1,7 +1,7 @@
 # Player Architecture Decisions
 
 > Trạng thái: Normative contract ledger cho Player v1<br>
-> Cập nhật gần nhất: 2026-08-10<br>
+> Cập nhật gần nhất: 2026-08-19<br>
 > Owner: Player team
 
 ## 1. Quy tắc sử dụng tài liệu
@@ -30,7 +30,7 @@
 | PLR-004 | Accepted | 1 | Canonical Stop transaction |
 | PLR-005 | Accepted | 1 | Interruption và becoming-noisy |
 | PLR-006 | Accepted | 4 | Handler test seam và adapter boundary |
-| PLR-007 | Accepted | 1 | Bootstrap, OS error và Android service |
+| PLR-007 | Accepted | 2 | Bootstrap, OS error và Android service |
 | PLR-008 | Accepted | 1 | Command-validity và rapid intent |
 | PLR-009 | Accepted | 1 | Active/pending load và replace failure |
 | PLR-014 | Accepted | 1 | Queue, shuffle và manual navigation |
@@ -532,7 +532,14 @@ plugin. Đồng thời Application không được phụ thuộc concrete BaseAu
 ## PLR-007 / 2026-08-02 / Owner: Player team
 
 **Status:** Accepted<br>
-**Decision version:** 1
+**Decision version:** 2<br>
+**Revision date:** 2026-08-19<br>
+**Revision reason:** Tách rõ failure trước và sau handler builder; chấp thuận
+production fallback `UnavailablePlaybackGateway` cho cả failure tại
+`WidgetsFlutterBinding.ensureInitialized()`, và cập nhật các projection
+bootstrap/error liên quan.<br>
+**Revision status:** Accepted<br>
+**Revision approved:** 2026-08-19 / Player team
 
 ### Context
 
@@ -543,13 +550,17 @@ production và Android background; tuyệt đối không tạo player thứ hai 
 
 #### Bootstrap
 
-- Development/test bootstrap failure là fail-fast và giữ original stack trace.
-- Production bootstrap failure tạo `UnavailablePlaybackGateway` không sở hữu
-  engine, replay một snapshot `processingState=error` với
-  `PlayerFailure(code: bootstrapUnavailable, isRecoverable: false)`.
-- UI hiển thị player unavailable; mọi playback command trả typed
-  `commandUnavailable`.
-- Không retry bootstrap ngầm và không tạo handler/AudioPlayer thứ hai.
+- Failure trước khi `AudioService.init` gọi handler builder:
+  - development/test fail-fast và giữ original stack trace;
+  - production tạo `UnavailablePlaybackGateway` không sở hữu engine, replay một
+    snapshot `processingState=error` với
+    `PlayerFailure(code: bootstrapUnavailable, isRecoverable: false)`;
+  - UI hiển thị player unavailable; mọi playback command trả typed
+    `commandUnavailable`.
+- Failure sau khi handler builder đã được gọi, bao gồm handler/player creation
+  failure và `AudioSession.configure` failure, luôn fail-fast và giữ original
+  stack trace ở mọi mode. Không `runApp`, không retry và không tạo playback
+  stack thứ hai.
 
 #### OS error mapping
 
@@ -587,8 +598,9 @@ production và Android background; tuyệt đối không tạo player thứ hai 
 ### Alternatives rejected
 
 - Fallback AudioPlayer: phá invariant một player/session.
-- Production crash toàn app vì audio unavailable: không cần thiết nếu UI có thể
-  degrade không engine.
+- Production fallback sau khi handler/player đã tồn tại: bị loại vì không thể
+  đáp ứng single-stack invariant; pre-handler failure vẫn degrade qua
+  `UnavailablePlaybackGateway`.
 - Dùng default `androidStopForegroundOnPause` ngầm: behavior có thể đổi theo
   dependency và khó audit.
 - Auto-restore/play sau process death ở v1: cần persistence/security policy riêng.
@@ -601,8 +613,9 @@ production và Android background; tuyệt đối không tạo player thứ hai 
 
 ### Test oracle
 
-- Dev bootstrap error rethrow; production tạo unavailable Gateway với engine
-  creation count zero sau failure.
+- Pre-handler dev bootstrap error rethrow; pre-handler production fallback tạo
+  unavailable Gateway với engine creation count zero.
+- Post-handler failure rethrow và không tạo handler/player thứ hai.
 - Mỗi error category map đúng processing/error code/message sanitization.
 - Config test assert `androidStopForegroundOnPause == false`.
 - Pause không gỡ card; Stop gỡ card; device QA lưu Android/API/evidence.

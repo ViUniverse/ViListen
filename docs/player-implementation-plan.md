@@ -463,15 +463,27 @@ Future<void> main() async {
   final PlaybackGateway gateway = UiPlaybackGatewayAdapter(handler);
 
   runApp(
-    BlocProvider(
-      create: (_) => PlayerCubit(gateway),
+    MultiBlocProvider(
+      providers: [
+        BlocProvider<PlayerCubit>(
+          create: (_) => PlayerCubit(gateway),
+        ),
+        // TODO(PLR-110): Remove the temporary legacy provider after migration.
+        BlocProvider<LegacyPlayerCubit>(
+          create: (_) => LegacyPlayerCubit(),
+        ),
+      ],
       child: const MyApp(),
     ),
   );
 }
 ~~~
 
-Đoạn trên mô tả happy path. Composition root thật phải fail-fast ở dev/test; ở production, nếu bootstrap plugin thất bại thì inject <code>UnavailablePlaybackGateway</code>, không tạo engine thứ hai và không giả lập playback.
+Đoạn trên mô tả happy path. Composition root thật fallback sang
+<code>UnavailablePlaybackGateway</code> chỉ khi failure xảy ra trước khi
+<code>AudioService.init</code> gọi handler builder. Nếu handler/player đã được
+tạo hoặc <code>AudioSession.configure</code> thất bại, mọi mode đều fail-fast,
+không gọi <code>runApp</code>, không retry và không tạo engine thứ hai.
 
 <code>AudioSessionConfiguration.speech()</code> phù hợp nội dung học ngoại ngữ, podcast và spoken audio. <code>androidStopForegroundOnPause: false</code> là policy đã chốt để Pause không phải restart foreground service từ background trên Android 12+.
 

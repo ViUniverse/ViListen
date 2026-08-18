@@ -147,7 +147,8 @@ participant Engine as AudioPlayer
 participant Session as AudioSession
 participant Gateway as UiPlaybackGatewayAdapter
 participant Cubit as PlayerCubit
-participant Provider as BlocProvider
+participant Legacy as LegacyPlayerCubit
+participant Provider as MultiBlocProvider
 participant App as MyApp
 
 Main->>Binding: ensureInitialized()
@@ -170,7 +171,8 @@ Cubit->>Gateway: subscribe snapshots
 Gateway->>Handler: subscribe internal snapshots
 Handler-->>Gateway: initial idle snapshot
 Gateway-->>Cubit: initial idle snapshot
-Main->>Provider: provide PlayerCubit
+Main->>Provider: compose target + legacy providers
+Provider->>Legacy: create LegacyPlayerCubit (migration bridge)
 Main->>App: runApp()
 App-->>Main: first frame
 ```
@@ -179,6 +181,9 @@ Behavior contract:
 
 - <code>AudioService.init</code> hoàn tất trước <code>runApp</code>.
 - Handler và AudioPlayer chỉ được tạo một lần.
+- Composition root tạm cung cấp <code>PlayerCubit</code> và
+  <code>LegacyPlayerCubit</code> qua <code>MultiBlocProvider</code>; bridge được
+  cleanup tại PLR-110.
 - PlayerCubit chỉ nhận <code>UiPlaybackGatewayAdapter</code> qua interface
   <code>PlaybackGateway</code>; không nhận concrete handler.
 - Initial snapshot là idle, không có current item.
@@ -186,9 +191,13 @@ Behavior contract:
 
 Failure behavior:
 
-- Development/test bootstrap failure fail-fast.
-- Production bootstrap failure dùng <code>UnavailablePlaybackGateway</code> không
-  sở hữu engine và phát snapshot <code>bootstrapUnavailable</code>.
+- Failure trước khi <code>AudioService.init</code> gọi handler builder:
+  development/test fail-fast; production dùng
+  <code>UnavailablePlaybackGateway</code> không sở hữu engine và phát snapshot
+  <code>bootstrapUnavailable</code>.
+- Failure sau khi handler builder đã chạy, kể cả
+  <code>AudioSession.configure</code> failure, fail-fast ở mọi mode; không gọi
+  <code>runApp</code> và không retry.
 - Không được tạo một AudioPlayer thứ hai để “chữa cháy”.
 
 ## 6. Sequence Diagram — Load queue và autoplay
