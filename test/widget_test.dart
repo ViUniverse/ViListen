@@ -4,11 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vi_listen/features/player/application/player_cubit.dart';
+import 'package:vi_listen/features/player/domain/playback_processing_state.dart';
 import 'package:vi_listen/features/player/domain/playback_snapshot.dart';
 import 'package:vi_listen/features/player/presentation/cubit/player_cubit.dart'
     as legacy_player;
 import 'package:vi_listen/main.dart';
+import 'features/player/support/playback_snapshot_builder.dart';
 import 'features/player/support/player_widget_harness.dart';
+import 'features/player/support/player_test_data.dart';
 
 PlayerWidgetHarness buildSubject() => PlayerWidgetHarness();
 
@@ -17,6 +20,14 @@ void main() {
     final harness = buildSubject();
     try {
       await tester.pumpWidget(harness.wrap(const MyApp()));
+      harness.gateway.emit(
+        buildPlaybackSnapshot(
+          currentItem: testPlayerItem(),
+          processingState: PlaybackProcessingState.ready,
+          playing: true,
+        ),
+      );
+      await tester.pump();
 
       expect(find.byType(NavigationBar), findsOneWidget);
       expect(find.byKey(const ValueKey('mini-player')), findsOneWidget);
@@ -38,6 +49,13 @@ void main() {
     final harness = buildSubject();
     try {
       await tester.pumpWidget(harness.wrap(const MyApp()));
+      harness.gateway.emit(
+        buildPlaybackSnapshot(
+          currentItem: testPlayerItem(),
+          processingState: PlaybackProcessingState.ready,
+        ),
+      );
+      await tester.pump();
 
       await tester.tap(find.byKey(const ValueKey('mini-player')));
       await tester.pumpAndSettle();
@@ -69,6 +87,14 @@ void main() {
     final harness = buildSubject();
     try {
       await tester.pumpWidget(harness.wrap(const MyApp()));
+      harness.gateway.emit(
+        buildPlaybackSnapshot(
+          currentItem: testPlayerItem(),
+          processingState: PlaybackProcessingState.ready,
+        ),
+      );
+      await tester.pump();
+
       await tester.tap(find.byKey(const ValueKey('mini-player')));
       await tester.pumpAndSettle();
 
@@ -100,14 +126,8 @@ void main() {
       expect(target.state.playback, same(PlaybackSnapshot.idle));
       expect(target.state.currentItem, isNull);
       expect(target.state.playing, isFalse);
-      expect(
-        legacy.state.presentation,
-        legacy_player.LegacyPlayerPresentation.mini,
-      );
-      expect(legacy.state.progress, .45);
-      expect(legacy.state.isPlaying, isTrue);
       expect(find.byType(NavigationBar), findsOneWidget);
-      expect(find.byKey(const ValueKey('mini-player')), findsOneWidget);
+      expect(find.byKey(const ValueKey('mini-player')), findsNothing);
     } finally {
       await harness.dispose(tester);
     }
