@@ -3,41 +3,107 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:vi_listen/features/player/application/player_cubit.dart';
+import 'package:vi_listen/features/player/application/player_state.dart';
+import 'player_artwork_image_provider.dart'
+    if (dart.library.io) 'player_artwork_image_provider_io.dart'
+    if (dart.library.js_interop) 'player_artwork_image_provider_web.dart'
+    as artwork_image_provider;
 
 const playerArtworkHeroTag = 'now-playing-artwork';
+
+typedef PlayerArtworkImageProviderResolver =
+    ImageProvider<Object> Function(Uri uri);
 
 class PlayerArtworkHero extends StatelessWidget {
   const PlayerArtworkHero({
     super.key,
     required this.size,
     required this.radius,
+    this.imageProviderResolver,
   });
 
   final double size;
   final double radius;
+  final PlayerArtworkImageProviderResolver? imageProviderResolver;
 
   @override
-  Widget build(BuildContext context) => Hero(
-    tag: playerArtworkHeroTag,
-    createRectTween: (begin, end) =>
-        MaterialRectArcTween(begin: begin, end: end),
-    child: PlayerArtwork(size: size, radius: radius),
-  );
+  Widget build(BuildContext context) =>
+      BlocSelector<PlayerCubit, PlayerState, Uri?>(
+        selector: (state) => state.currentItem?.artUri,
+        builder: (context, artUri) => Hero(
+          tag: playerArtworkHeroTag,
+          createRectTween: (begin, end) =>
+              MaterialRectArcTween(begin: begin, end: end),
+          child: PlayerArtwork(
+            size: size,
+            radius: radius,
+            artUri: artUri,
+            imageProviderResolver: imageProviderResolver,
+          ),
+        ),
+      );
 }
 
-class PlayerArtwork extends StatelessWidget {
-  const PlayerArtwork({super.key, required this.size, required this.radius});
+class PlayerArtwork extends StatefulWidget {
+  const PlayerArtwork({
+    super.key,
+    required this.size,
+    required this.radius,
+    this.artUri,
+    this.imageProviderResolver,
+  });
 
   final double size;
   final double radius;
+  final Uri? artUri;
+  final PlayerArtworkImageProviderResolver? imageProviderResolver;
+
+  @override
+  State<PlayerArtwork> createState() => _PlayerArtworkState();
+}
+
+class _PlayerArtworkState extends State<PlayerArtwork> {
+  ImageProvider<Object>? _provider;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveProvider();
+  }
+
+  @override
+  void didUpdateWidget(covariant PlayerArtwork oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.artUri != widget.artUri) {
+      _resolveProvider();
+    }
+  }
+
+  void _resolveProvider() {
+    final uri = widget.artUri;
+    if (uri == null) {
+      _provider = null;
+      return;
+    }
+
+    try {
+      _provider =
+          (widget.imageProviderResolver ??
+          artwork_image_provider.resolvePlayerArtworkImageProvider)(uri);
+    } on Object {
+      _provider = null;
+    }
+  }
 
   @override
   Widget build(BuildContext context) => Container(
-    width: size,
-    height: size,
+    width: widget.size,
+    height: widget.size,
     clipBehavior: Clip.antiAlias,
     decoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(radius),
+      borderRadius: BorderRadius.circular(widget.radius),
       boxShadow: const [
         BoxShadow(
           color: Color(0x4df2542c),
@@ -46,24 +112,47 @@ class PlayerArtwork extends StatelessWidget {
         ),
       ],
     ),
-    child: Stack(
-      fit: StackFit.expand,
-      children: [
-        const CustomPaint(painter: _BookPainter()),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                const Color(0xfff2542c).withValues(alpha: .86),
-                const Color(0xffec4899).withValues(alpha: .78),
-              ],
-            ),
+    child: _provider == null
+        ? const _ArtworkPlaceholder()
+        : Image(
+            key: ValueKey<String>('player-artwork-image-${widget.artUri}'),
+            image: _provider!,
+            fit: BoxFit.cover,
+            gaplessPlayback: false,
+            frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+              if (wasSynchronouslyLoaded || frame != null) {
+                return child;
+              }
+              return const _ArtworkPlaceholder();
+            },
+            errorBuilder: (context, error, stackTrace) =>
+                const _ArtworkPlaceholder(),
+          ),
+  );
+}
+
+class _ArtworkPlaceholder extends StatelessWidget {
+  const _ArtworkPlaceholder();
+
+  @override
+  Widget build(BuildContext context) => Stack(
+    key: const ValueKey<String>('player-artwork-placeholder'),
+    fit: StackFit.expand,
+    children: [
+      const CustomPaint(painter: _BookPainter()),
+      DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              const Color(0xfff2542c).withValues(alpha: .86),
+              const Color(0xffec4899).withValues(alpha: .78),
+            ],
           ),
         ),
-      ],
-    ),
+      ),
+    ],
   );
 }
 
