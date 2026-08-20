@@ -31,10 +31,21 @@ void main() {
 
       expect(find.byType(NavigationBar), findsOneWidget);
       expect(find.byKey(const ValueKey('mini-player')), findsOneWidget);
-      expect(find.text('The English We Speak: On their toes'), findsOneWidget);
+      expect(find.text('Test track'), findsOneWidget);
       expect(find.byTooltip('Tạm dừng'), findsOneWidget);
 
       await tester.tap(find.byTooltip('Tạm dừng'));
+      await tester.pump();
+
+      expect(find.byTooltip('Tạm dừng'), findsOneWidget);
+
+      harness.gateway.emit(
+        buildPlaybackSnapshot(
+          currentItem: testPlayerItem(),
+          processingState: PlaybackProcessingState.ready,
+          playing: false,
+        ),
+      );
       await tester.pump();
 
       expect(find.byTooltip('Phát'), findsOneWidget);
