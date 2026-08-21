@@ -4,10 +4,11 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:vi_listen/features/player/application/player_command_policies.dart';
 import 'package:vi_listen/features/player/application/player_cubit.dart';
 import 'package:vi_listen/features/player/application/player_state.dart';
-import 'package:vi_listen/features/player/presentation/cubit/player_cubit.dart'
-    as legacy_player;
+import 'package:vi_listen/features/player/domain/playback_processing_state.dart';
+import 'package:vi_listen/features/player/domain/player_repeat_mode.dart';
 import 'package:vi_listen/features/player/presentation/player_duration_formatter.dart';
 
 class PlayerControlDock extends StatefulWidget {
@@ -39,11 +40,42 @@ class _PlayerControlDockState extends State<PlayerControlDock> {
         previous.playback.bufferedPosition !=
             current.playback.bufferedPosition ||
         previous.playing != current.playing ||
-        previous.isCompleted != current.isCompleted,
+        previous.isCompleted != current.isCompleted ||
+        (previous.currentItem == null) != (current.currentItem == null) ||
+        previous.playback.currentIndex != current.playback.currentIndex ||
+        previous.playback.queue.length != current.playback.queue.length ||
+        previous.playback.speed != current.playback.speed ||
+        previous.playback.repeatMode != current.playback.repeatMode ||
+        previous.playback.shuffleEnabled != current.playback.shuffleEnabled ||
+        previous.playback.processingState != current.playback.processingState ||
+        previous.failure != current.failure,
     builder: (context, state) {
       final cubit = context.read<PlayerCubit>();
       final duration = state.duration;
       final canSeek = duration > Duration.zero;
+      final snapshot = state.playback;
+      final currentIndex = snapshot.currentIndex;
+      final hasValidQueueContext =
+          state.currentItem != null &&
+          currentIndex != null &&
+          currentIndex >= 0 &&
+          currentIndex < snapshot.queue.length;
+      final controlsAvailable =
+          hasValidQueueContext &&
+          snapshot.failure == null &&
+          snapshot.processingState != PlaybackProcessingState.idle &&
+          snapshot.processingState != PlaybackProcessingState.error;
+      final canGoNext =
+          controlsAvailable &&
+          (snapshot.hasNext ||
+              snapshot.repeatMode == PlayerRepeatMode.all &&
+                  snapshot.queue.length > 1);
+      final canGoPrevious =
+          controlsAvailable &&
+          (snapshot.hasPrevious ||
+              state.position > PlayerCommandPolicies.previousRestartThreshold ||
+              snapshot.repeatMode == PlayerRepeatMode.all &&
+                  snapshot.queue.length > 1);
       final bufferedProgress = _bufferedProgress(
         state.playback.bufferedPosition,
         duration,
@@ -127,7 +159,11 @@ class _PlayerControlDockState extends State<PlayerControlDock> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const _LegacySpeedControl(),
+                  _SmallControl(
+                    label: 'Bài trước',
+                    onPressed: canGoPrevious ? cubit.previous : null,
+                    child: const Icon(Icons.skip_previous_rounded, size: 28),
+                  ),
                   _SmallControl(
                     label: 'Tua lại 10 giây',
                     onPressed: canSeek ? cubit.skipBackward : null,
@@ -179,11 +215,49 @@ class _PlayerControlDockState extends State<PlayerControlDock> {
                     child: const Icon(Icons.forward_10_rounded, size: 28),
                   ),
                   _SmallControl(
-                    label: 'Lặp lại',
-                    onPressed: () {},
-                    child: const Icon(
-                      Icons.repeat_rounded,
-                      color: Color(0xff94a3b8),
+                    label: 'Bài tiếp theo',
+                    onPressed: canGoNext ? cubit.next : null,
+                    child: const Icon(Icons.skip_next_rounded, size: 28),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _SmallControl(
+                    label: 'Tốc độ phát ${_formatSpeed(snapshot.speed)}',
+                    onPressed: controlsAvailable
+                        ? () => cubit.setSpeed(_nextSpeedPreset(snapshot.speed))
+                        : null,
+                    child: Text(
+                      _formatSpeed(snapshot.speed),
+                      style: const TextStyle(
+                        color: Color(0xff64748b),
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  _SmallControl(
+                    label: _repeatLabel(snapshot.repeatMode),
+                    onPressed: controlsAvailable ? cubit.cycleRepeatMode : null,
+                    child: Icon(
+                      _repeatIcon(snapshot.repeatMode),
+                      color: _optionColor(
+                        snapshot.repeatMode != PlayerRepeatMode.off,
+                      ),
+                      size: 25,
+                    ),
+                  ),
+                  _SmallControl(
+                    label: snapshot.shuffleEnabled
+                        ? 'Trộn bài: bật'
+                        : 'Trộn bài: tắt',
+                    onPressed: controlsAvailable ? cubit.toggleShuffle : null,
+                    child: Icon(
+                      Icons.shuffle_rounded,
+                      color: _optionColor(snapshot.shuffleEnabled),
                       size: 25,
                     ),
                   ),
@@ -294,6 +368,37 @@ const _timeStyle = TextStyle(
   fontWeight: FontWeight.w600,
 );
 
+double _nextSpeedPreset(double current) {
+  for (final preset in PlayerCommandPolicies.speedPresets) {
+    if (preset > current) {
+      return preset;
+    }
+  }
+
+  return PlayerCommandPolicies.speedPresets.first;
+}
+
+String _formatSpeed(double speed) {
+  final fixed = speed.toStringAsFixed(2);
+  final trimmed = fixed.replaceFirst(RegExp(r'0+$'), '');
+  final normalized = trimmed.endsWith('.') ? '${trimmed}0' : trimmed;
+  return '${normalized}x';
+}
+
+String _repeatLabel(PlayerRepeatMode mode) => switch (mode) {
+  PlayerRepeatMode.off => 'Lặp lại: tắt',
+  PlayerRepeatMode.one => 'Lặp lại: một',
+  PlayerRepeatMode.all => 'Lặp lại: tất cả',
+};
+
+IconData _repeatIcon(PlayerRepeatMode mode) => switch (mode) {
+  PlayerRepeatMode.off || PlayerRepeatMode.all => Icons.repeat_rounded,
+  PlayerRepeatMode.one => Icons.repeat_one_rounded,
+};
+
+Color _optionColor(bool active) =>
+    active ? const Color(0xfff2542c) : const Color(0xff94a3b8);
+
 class _SmallControl extends StatelessWidget {
   const _SmallControl({
     required this.label,
@@ -311,34 +416,4 @@ class _SmallControl extends StatelessWidget {
     label: label,
     child: IconButton(onPressed: onPressed, icon: child),
   );
-}
-
-class _LegacySpeedControl extends StatelessWidget {
-  const _LegacySpeedControl();
-
-  @override
-  Widget build(BuildContext context) =>
-      // TODO(PLR-111): Migrate speed/options controls to PlayerCubit.
-      BlocBuilder<
-        legacy_player.LegacyPlayerCubit,
-        legacy_player.LegacyPlayerState
-      >(
-        buildWhen: (previous, current) =>
-            previous.speedIndex != current.speedIndex,
-        builder: (context, state) {
-          final cubit = context.read<legacy_player.LegacyPlayerCubit>();
-          return _SmallControl(
-            label: 'Tốc độ phát ${state.speed}',
-            onPressed: cubit.cycleSpeed,
-            child: Text(
-              state.speed,
-              style: const TextStyle(
-                color: Color(0xff64748b),
-                fontWeight: FontWeight.w700,
-                fontSize: 12,
-              ),
-            ),
-          );
-        },
-      );
 }
