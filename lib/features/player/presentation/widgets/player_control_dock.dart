@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:vi_listen/features/player/application/player_cubit.dart';
@@ -8,11 +10,29 @@ import 'package:vi_listen/features/player/presentation/cubit/player_cubit.dart'
     as legacy_player;
 import 'package:vi_listen/features/player/presentation/player_duration_formatter.dart';
 
-class PlayerControlDock extends StatelessWidget {
+class PlayerControlDock extends StatefulWidget {
   const PlayerControlDock({super.key});
 
   @override
-  Widget build(BuildContext context) => BlocBuilder<PlayerCubit, PlayerState>(
+  State<PlayerControlDock> createState() => _PlayerControlDockState();
+}
+
+class _PlayerControlDockState extends State<PlayerControlDock> {
+  bool _isDragging = false;
+  Duration? _previewPosition;
+  String? _dragItemId;
+
+  @override
+  Widget build(BuildContext context) => BlocConsumer<PlayerCubit, PlayerState>(
+    listenWhen: (previous, current) {
+      if (!_isDragging) {
+        return false;
+      }
+
+      return current.duration <= Duration.zero ||
+          previous.currentItem?.id != current.currentItem?.id;
+    },
+    listener: (context, state) => _clearSeekPreview(),
     buildWhen: (previous, current) =>
         previous.position != current.position ||
         previous.duration != current.duration ||
@@ -26,6 +46,22 @@ class PlayerControlDock extends StatelessWidget {
       final canSeek = duration > Duration.zero;
       final bufferedProgress = _bufferedProgress(
         state.playback.bufferedPosition,
+        duration,
+      );
+      final hasActivePreview =
+          _isDragging &&
+          _previewPosition != null &&
+          state.currentItem?.id == _dragItemId &&
+          canSeek;
+      final displayedPosition = hasActivePreview
+          ? _previewPosition!
+          : state.position;
+      final displayedProgress = _progressForPosition(
+        displayedPosition,
+        duration,
+      );
+      final displayedRemaining = _remainingForPosition(
+        displayedPosition,
         duration,
       );
       return Container(
@@ -64,13 +100,14 @@ class PlayerControlDock extends StatelessWidget {
                   inactiveTrackColor: const Color(0xffe2e8f0),
                 ),
                 child: Slider(
-                  value: state.progress,
+                  value: displayedProgress,
                   secondaryTrackValue: bufferedProgress,
-                  // PLR-106 will replace this direct seek with local preview
-                  // and a single seek commit.
+                  onChangeStart: canSeek ? _startSeekPreview : null,
                   onChanged: canSeek
-                      ? (value) =>
-                            cubit.seekTo(_positionForProgress(value, duration))
+                      ? (value) => _updateSeekPreview(value, duration)
+                      : null,
+                  onChangeEnd: canSeek
+                      ? (value) => _commitSeek(context, value)
                       : null,
                 ),
               ),
@@ -79,9 +116,9 @@ class PlayerControlDock extends StatelessWidget {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(formatElapsed(state.position), style: _timeStyle),
+                    Text(formatElapsed(displayedPosition), style: _timeStyle),
                     Text(
-                      formatRemaining(state.playback.remaining),
+                      formatRemaining(displayedRemaining),
                       style: _timeStyle,
                     ),
                   ],
@@ -158,6 +195,57 @@ class PlayerControlDock extends StatelessWidget {
       );
     },
   );
+
+  void _startSeekPreview(double _) {
+    final state = context.read<PlayerCubit>().state;
+    if (state.duration <= Duration.zero) {
+      return;
+    }
+
+    setState(() {
+      _isDragging = true;
+      _dragItemId = state.currentItem?.id;
+      _previewPosition = null;
+    });
+  }
+
+  void _updateSeekPreview(double value, Duration duration) {
+    if (!_isDragging || duration <= Duration.zero) {
+      return;
+    }
+
+    setState(() {
+      _previewPosition = _positionForProgress(value, duration);
+    });
+  }
+
+  void _commitSeek(BuildContext context, double value) {
+    final cubit = context.read<PlayerCubit>();
+    final state = cubit.state;
+    final itemId = state.currentItem?.id;
+    if (!_isDragging ||
+        state.duration <= Duration.zero ||
+        itemId != _dragItemId) {
+      _clearSeekPreview();
+      return;
+    }
+
+    final target = _positionForProgress(value, state.duration);
+    _clearSeekPreview();
+    unawaited(cubit.seekTo(target));
+  }
+
+  void _clearSeekPreview() {
+    if (!_isDragging && _previewPosition == null && _dragItemId == null) {
+      return;
+    }
+
+    setState(() {
+      _isDragging = false;
+      _previewPosition = null;
+      _dragItemId = null;
+    });
+  }
 }
 
 double? _bufferedProgress(Duration bufferedPosition, Duration duration) {
@@ -176,6 +264,28 @@ Duration _positionForProgress(double progress, Duration duration) {
   return Duration(
     microseconds: (duration.inMicroseconds * boundedProgress).round(),
   );
+}
+
+double _progressForPosition(Duration position, Duration duration) {
+  final durationMicros = duration.inMicroseconds;
+  if (durationMicros <= 0) {
+    return 0.0;
+  }
+
+  return (position.inMicroseconds / durationMicros).clamp(0.0, 1.0).toDouble();
+}
+
+Duration _remainingForPosition(Duration position, Duration duration) {
+  if (duration <= Duration.zero) {
+    return Duration.zero;
+  }
+
+  final boundedPosition = position <= Duration.zero
+      ? Duration.zero
+      : position >= duration
+      ? duration
+      : position;
+  return duration - boundedPosition;
 }
 
 const _timeStyle = TextStyle(

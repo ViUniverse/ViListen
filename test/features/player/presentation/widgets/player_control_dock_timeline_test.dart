@@ -40,7 +40,7 @@ void main() {
     }
   });
 
-  testWidgets('slider delegates a real position to the target Cubit', (
+  testWidgets('slider previews a position without seeking on change', (
     tester,
   ) async {
     final harness = PlayerWidgetHarness();
@@ -58,13 +58,12 @@ void main() {
       );
 
       final slider = tester.widget<Slider>(find.byType(Slider));
+      slider.onChangeStart!(0.0);
       slider.onChanged!(0.25);
       await tester.pump();
 
-      expect(harness.gateway.callCountFor('seek'), 1);
-      expect(harness.gateway.commands.single.arguments, {
-        'position': const Duration(minutes: 2, seconds: 30),
-      });
+      expect(tester.widget<Slider>(find.byType(Slider)).value, 0.25);
+      expect(harness.gateway.callCountFor('seek'), 0);
     } finally {
       await harness.dispose(tester);
     }
