@@ -59,8 +59,44 @@ class _ExpandedPlayerScreenState extends State<ExpandedPlayerScreen> {
   double _sheetExtent = _minSheetSize;
   double _dismissFraction = 0;
   bool _isDismissingGesture = false;
+  bool _autoPopRequested = false;
+  bool _initialPlaybackCheckScheduled = false;
 
   bool get _showBottomPlayer => _sheetExtent >= .96;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    if (_initialPlaybackCheckScheduled) {
+      return;
+    }
+
+    _initialPlaybackCheckScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      if (context.read<PlayerCubit>().state.currentItem == null) {
+        _tryAutoPop();
+      }
+    });
+  }
+
+  void _tryAutoPop() {
+    if (!mounted || _autoPopRequested) {
+      return;
+    }
+
+    final route = ModalRoute.of(context);
+    if (route is! ExpandedPlayerRoute || !route.isCurrent) {
+      return;
+    }
+
+    _autoPopRequested = true;
+    Navigator.of(context).pop();
+  }
 
   void _dragSheet(DragUpdateDetails details) {
     final nextSize =
@@ -108,126 +144,132 @@ class _ExpandedPlayerScreenState extends State<ExpandedPlayerScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    backgroundColor: Colors.transparent,
-    body: LayoutBuilder(
-      builder: (context, constraints) {
-        final topInset = MediaQuery.paddingOf(context).top;
-        final backgroundColor = Theme.of(context).scaffoldBackgroundColor;
-        final animationDuration = _isDismissingGesture
-            ? Duration.zero
-            : const Duration(milliseconds: 220);
+  Widget build(BuildContext context) => BlocListener<PlayerCubit, PlayerState>(
+    listenWhen: (previous, current) =>
+        previous.currentItem != null && current.currentItem == null,
+    listener: (_, _) => _tryAutoPop(),
+    child: Scaffold(
+      backgroundColor: Colors.transparent,
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final topInset = MediaQuery.paddingOf(context).top;
+          final backgroundColor = Theme.of(context).scaffoldBackgroundColor;
+          final animationDuration = _isDismissingGesture
+              ? Duration.zero
+              : const Duration(milliseconds: 220);
 
-        return Stack(
-          children: [
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              height: topInset,
-              child: IgnorePointer(
-                child: AnimatedOpacity(
-                  opacity: 1 - _dismissFraction,
-                  duration: animationDuration,
-                  curve: Curves.easeOutCubic,
-                  child: ColoredBox(color: backgroundColor),
+          return Stack(
+            children: [
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: topInset,
+                child: IgnorePointer(
+                  child: AnimatedOpacity(
+                    opacity: 1 - _dismissFraction,
+                    duration: animationDuration,
+                    curve: Curves.easeOutCubic,
+                    child: ColoredBox(color: backgroundColor),
+                  ),
                 ),
               ),
-            ),
-            Positioned.fill(
-              top: topInset,
-              child: AnimatedSlide(
-                offset: Offset(0, _dismissFraction),
-                duration: animationDuration,
-                curve: Curves.easeOutCubic,
-                child: ColoredBox(
-                  color: backgroundColor,
-                  child: SafeArea(
-                    top: false,
-                    bottom: false,
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: ExcludeSemantics(
-                            excluding: _showBottomPlayer,
-                            child: IgnorePointer(
-                              ignoring: _showBottomPlayer,
-                              child: AnimatedOpacity(
-                                opacity: _showBottomPlayer ? 0 : 1,
-                                duration: const Duration(milliseconds: 180),
-                                child: SingleChildScrollView(
-                                  padding: const EdgeInsets.fromLTRB(
-                                    24,
-                                    4,
-                                    24,
-                                    184,
-                                  ),
-                                  child: Column(
-                                    children: [
-                                      GestureDetector(
-                                        key: const ValueKey(
-                                          'expanded-player-dismiss-region',
+              Positioned.fill(
+                top: topInset,
+                child: AnimatedSlide(
+                  offset: Offset(0, _dismissFraction),
+                  duration: animationDuration,
+                  curve: Curves.easeOutCubic,
+                  child: ColoredBox(
+                    color: backgroundColor,
+                    child: SafeArea(
+                      top: false,
+                      bottom: false,
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: ExcludeSemantics(
+                              excluding: _showBottomPlayer,
+                              child: IgnorePointer(
+                                ignoring: _showBottomPlayer,
+                                child: AnimatedOpacity(
+                                  opacity: _showBottomPlayer ? 0 : 1,
+                                  duration: const Duration(milliseconds: 180),
+                                  child: SingleChildScrollView(
+                                    padding: const EdgeInsets.fromLTRB(
+                                      24,
+                                      4,
+                                      24,
+                                      184,
+                                    ),
+                                    child: Column(
+                                      children: [
+                                        GestureDetector(
+                                          key: const ValueKey(
+                                            'expanded-player-dismiss-region',
+                                          ),
+                                          behavior: HitTestBehavior.translucent,
+                                          onVerticalDragUpdate: _dragToMinimize,
+                                          onVerticalDragEnd: _settleMinimize,
+                                          child: Column(
+                                            children: [
+                                              _Header(
+                                                onClose: () =>
+                                                    Navigator.of(context).pop(),
+                                              ),
+                                              const _ExpandedArtwork(),
+                                            ],
+                                          ),
                                         ),
-                                        behavior: HitTestBehavior.translucent,
-                                        onVerticalDragUpdate: _dragToMinimize,
-                                        onVerticalDragEnd: _settleMinimize,
-                                        child: Column(
-                                          children: [
-                                            _Header(
-                                              onClose: () =>
-                                                  Navigator.of(context).pop(),
-                                            ),
-                                            const _ExpandedArtwork(),
-                                          ],
-                                        ),
-                                      ),
-                                      const SizedBox(height: 16),
-                                      const _ExpandedPlaybackControls(),
-                                    ],
+                                        const SizedBox(height: 16),
+                                        const _ExpandedPlaybackControls(),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
                             ),
                           ),
-                        ),
-                        NotificationListener<DraggableScrollableNotification>(
-                          onNotification: (notification) {
-                            if ((_sheetExtent - notification.extent).abs() >
-                                .001) {
-                              setState(
-                                () => _sheetExtent = notification.extent,
-                              );
-                            }
-                            return false;
-                          },
-                          child: DraggableScrollableSheet(
-                            controller: _sheetController,
-                            initialChildSize: _minSheetSize,
-                            minChildSize: _minSheetSize,
-                            maxChildSize: 1,
-                            snap: true,
-                            snapSizes: const [_minSheetSize, 1],
-                            snapAnimationDuration: const Duration(
-                              milliseconds: 260,
-                            ),
-                            builder: (_, scrollController) => _TranscriptSheet(
-                              scrollController: scrollController,
-                              showBottomPlayer: _showBottomPlayer,
-                              onHandleDragUpdate: _dragSheet,
-                              onHandleDragEnd: _settleSheet,
-                              onClose: () => Navigator.of(context).pop(),
+                          NotificationListener<DraggableScrollableNotification>(
+                            onNotification: (notification) {
+                              if ((_sheetExtent - notification.extent).abs() >
+                                  .001) {
+                                setState(
+                                  () => _sheetExtent = notification.extent,
+                                );
+                              }
+                              return false;
+                            },
+                            child: DraggableScrollableSheet(
+                              controller: _sheetController,
+                              initialChildSize: _minSheetSize,
+                              minChildSize: _minSheetSize,
+                              maxChildSize: 1,
+                              snap: true,
+                              snapSizes: const [_minSheetSize, 1],
+                              snapAnimationDuration: const Duration(
+                                milliseconds: 260,
+                              ),
+                              builder: (_, scrollController) =>
+                                  _TranscriptSheet(
+                                    scrollController: scrollController,
+                                    showBottomPlayer: _showBottomPlayer,
+                                    onHandleDragUpdate: _dragSheet,
+                                    onHandleDragEnd: _settleSheet,
+                                    onClose: () => Navigator.of(context).pop(),
+                                  ),
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
-        );
-      },
+            ],
+          );
+        },
+      ),
     ),
   );
 }
