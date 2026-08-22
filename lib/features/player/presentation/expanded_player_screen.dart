@@ -479,32 +479,37 @@ class _ExpandedPlaybackControls extends StatelessWidget {
   const _ExpandedPlaybackControls();
 
   @override
-  Widget build(BuildContext context) => BlocBuilder<PlayerCubit, PlayerState>(
-    buildWhen: (previous, current) =>
-        previous.playback.processingState != current.playback.processingState ||
-        previous.failure != current.failure ||
-        previous.playing != current.playing,
-    builder: (context, state) {
-      final processingState = state.playback.processingState;
-      if (processingState == PlaybackProcessingState.error ||
-          state.failure != null) {
-        return _ExpandedErrorNotice(failure: state.failure);
-      }
+  Widget build(BuildContext context) =>
+      BlocSelector<PlayerCubit, PlayerState, _ExpandedControlMode>(
+        selector: (state) => (
+          processingState: state.playback.processingState,
+          failure: state.failure,
+        ),
+        builder: (context, mode) {
+          if (mode.processingState == PlaybackProcessingState.error ||
+              mode.failure != null) {
+            return _ExpandedErrorNotice(failure: mode.failure);
+          }
 
-      if (state.isBuffering) {
-        return const Column(
-          children: [
-            _ExpandedBufferingNotice(),
-            SizedBox(height: 8),
-            PlayerControlDock(),
-          ],
-        );
-      }
+          if (mode.processingState == PlaybackProcessingState.buffering) {
+            return const Column(
+              children: [
+                _ExpandedBufferingNotice(),
+                SizedBox(height: 8),
+                PlayerControlDock(),
+              ],
+            );
+          }
 
-      return const PlayerControlDock();
-    },
-  );
+          return const PlayerControlDock();
+        },
+      );
 }
+
+typedef _ExpandedControlMode = ({
+  PlaybackProcessingState processingState,
+  PlayerFailure? failure,
+});
 
 class _ExpandedBufferingNotice extends StatelessWidget {
   const _ExpandedBufferingNotice();
