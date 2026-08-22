@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:vi_listen/features/player/application/player_cubit.dart';
+import 'package:vi_listen/features/player/application/player_state.dart';
+import 'package:vi_listen/features/player/domain/playback_processing_state.dart';
+import 'package:vi_listen/features/player/domain/player_failure.dart';
 import 'package:vi_listen/features/player/presentation/widgets/player_artwork.dart';
 import 'package:vi_listen/features/player/presentation/widgets/player_control_dock.dart';
 
 class ExpandedPlayerRoute extends PageRouteBuilder<void> {
   ExpandedPlayerRoute()
     : super(
-        pageBuilder: (context, animation, secondaryAnimation) => const ExpandedPlayerScreen(),
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            const ExpandedPlayerScreen(),
         opaque: false,
         barrierColor: Colors.transparent,
         transitionDuration: const Duration(milliseconds: 360),
@@ -25,7 +32,10 @@ class ExpandedPlayerRoute extends PageRouteBuilder<void> {
             builder: (context, child) {
               if (animation.status == AnimationStatus.reverse) {
                 return FadeTransition(
-                  opacity: CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+                  opacity: CurvedAnimation(
+                    parent: animation,
+                    curve: Curves.easeOutCubic,
+                  ),
                   child: child,
                 );
               }
@@ -53,7 +63,10 @@ class _ExpandedPlayerScreenState extends State<ExpandedPlayerScreen> {
   bool get _showBottomPlayer => _sheetExtent >= .96;
 
   void _dragSheet(DragUpdateDetails details) {
-    final nextSize = (_sheetController.size - details.delta.dy / MediaQuery.sizeOf(context).height).clamp(_minSheetSize, 1.0);
+    final nextSize =
+        (_sheetController.size -
+                details.delta.dy / MediaQuery.sizeOf(context).height)
+            .clamp(_minSheetSize, 1.0);
     _sheetController.jumpTo(nextSize);
   }
 
@@ -76,7 +89,8 @@ class _ExpandedPlayerScreenState extends State<ExpandedPlayerScreen> {
   }
 
   void _settleMinimize(DragEndDetails details) {
-    final shouldClose = _dismissFraction >= .18 || details.velocity.pixelsPerSecond.dy >= 850;
+    final shouldClose =
+        _dismissFraction >= .18 || details.velocity.pixelsPerSecond.dy >= 850;
     if (shouldClose) {
       Navigator.of(context).pop();
       return;
@@ -100,7 +114,9 @@ class _ExpandedPlayerScreenState extends State<ExpandedPlayerScreen> {
       builder: (context, constraints) {
         final topInset = MediaQuery.paddingOf(context).top;
         final backgroundColor = Theme.of(context).scaffoldBackgroundColor;
-        final animationDuration = _isDismissingGesture ? Duration.zero : const Duration(milliseconds: 220);
+        final animationDuration = _isDismissingGesture
+            ? Duration.zero
+            : const Duration(milliseconds: 220);
 
         return Stack(
           children: [
@@ -140,23 +156,33 @@ class _ExpandedPlayerScreenState extends State<ExpandedPlayerScreen> {
                                 opacity: _showBottomPlayer ? 0 : 1,
                                 duration: const Duration(milliseconds: 180),
                                 child: SingleChildScrollView(
-                                  padding: const EdgeInsets.fromLTRB(24, 4, 24, 184),
+                                  padding: const EdgeInsets.fromLTRB(
+                                    24,
+                                    4,
+                                    24,
+                                    184,
+                                  ),
                                   child: Column(
                                     children: [
                                       GestureDetector(
-                                        key: const ValueKey('expanded-player-dismiss-region'),
+                                        key: const ValueKey(
+                                          'expanded-player-dismiss-region',
+                                        ),
                                         behavior: HitTestBehavior.translucent,
                                         onVerticalDragUpdate: _dragToMinimize,
                                         onVerticalDragEnd: _settleMinimize,
                                         child: Column(
                                           children: [
-                                            _Header(onClose: () => Navigator.of(context).pop()),
+                                            _Header(
+                                              onClose: () =>
+                                                  Navigator.of(context).pop(),
+                                            ),
                                             const _ExpandedArtwork(),
                                           ],
                                         ),
                                       ),
                                       const SizedBox(height: 16),
-                                      const PlayerControlDock(),
+                                      const _ExpandedPlaybackControls(),
                                     ],
                                   ),
                                 ),
@@ -166,8 +192,11 @@ class _ExpandedPlayerScreenState extends State<ExpandedPlayerScreen> {
                         ),
                         NotificationListener<DraggableScrollableNotification>(
                           onNotification: (notification) {
-                            if ((_sheetExtent - notification.extent).abs() > .001) {
-                              setState(() => _sheetExtent = notification.extent);
+                            if ((_sheetExtent - notification.extent).abs() >
+                                .001) {
+                              setState(
+                                () => _sheetExtent = notification.extent,
+                              );
                             }
                             return false;
                           },
@@ -178,7 +207,9 @@ class _ExpandedPlayerScreenState extends State<ExpandedPlayerScreen> {
                             maxChildSize: 1,
                             snap: true,
                             snapSizes: const [_minSheetSize, 1],
-                            snapAnimationDuration: const Duration(milliseconds: 260),
+                            snapAnimationDuration: const Duration(
+                              milliseconds: 260,
+                            ),
                             builder: (_, scrollController) => _TranscriptSheet(
                               scrollController: scrollController,
                               showBottomPlayer: _showBottomPlayer,
@@ -211,75 +242,151 @@ class _Header extends StatelessWidget {
     child: Stack(
       alignment: Alignment.center,
       children: [
-        const Text('Đang nghe', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: -.4)),
+        const Text(
+          'Đang nghe',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -.4,
+          ),
+        ),
         Align(
           alignment: Alignment.centerRight,
-          child: IconButton(onPressed: onClose, icon: const Icon(Icons.close_rounded, size: 25), tooltip: 'Đóng về mini player'),
+          child: IconButton(
+            onPressed: onClose,
+            icon: const Icon(Icons.close_rounded, size: 25),
+            tooltip: 'Đóng về mini player',
+          ),
         ),
       ],
     ),
   );
 }
 
+typedef _ExpandedMetadata = ({
+  String? title,
+  String? artist,
+  Duration? duration,
+});
+
 class _ExpandedArtwork extends StatelessWidget {
   const _ExpandedArtwork();
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      final size = math.min(constraints.maxWidth, MediaQuery.sizeOf(context).height * .45);
-      return Semantics(
-        image: true,
-        label: 'Ảnh bìa The English We Speak: On their toes',
-        child: Stack(
-          children: [
-            PlayerArtworkHero(size: size, radius: 28),
-            Positioned.fill(
-              child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(28),
-                    gradient: const LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [Colors.transparent, Color(0x78000000)],
+  Widget build(BuildContext context) =>
+      BlocSelector<PlayerCubit, PlayerState, _ExpandedMetadata>(
+        selector: (state) {
+          final item = state.currentItem;
+          return (
+            title: item?.title,
+            artist: item?.artist,
+            duration: state.duration > Duration.zero
+                ? state.duration
+                : item?.duration,
+          );
+        },
+        builder: (context, metadata) => LayoutBuilder(
+          builder: (context, constraints) {
+            final size = math.min(
+              constraints.maxWidth,
+              MediaQuery.sizeOf(context).height * .45,
+            );
+            return Semantics(
+              image: true,
+              label: metadata.title == null
+                  ? 'Ảnh bìa'
+                  : 'Ảnh bìa ${metadata.title}',
+              child: Stack(
+                children: [
+                  PlayerArtworkHero(size: size, radius: 28),
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(28),
+                          gradient: const LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [Colors.transparent, Color(0x78000000)],
+                          ),
+                        ),
+                      ),
                     ),
                   ),
-                ),
+                  if (metadata.title != null ||
+                      metadata.artist != null ||
+                      metadata.duration != null)
+                    Positioned(
+                      left: 24,
+                      right: 24,
+                      bottom: 23,
+                      child: _ArtworkText(
+                        title: metadata.title,
+                        artist: metadata.artist,
+                        duration: metadata.duration,
+                      ),
+                    ),
+                ],
               ),
-            ),
-            const Positioned(left: 24, right: 24, bottom: 23, child: _ArtworkText()),
-          ],
+            );
+          },
         ),
       );
-    },
-  );
 }
 
 class _ArtworkText extends StatelessWidget {
-  const _ArtworkText();
+  const _ArtworkText({
+    required this.title,
+    required this.artist,
+    required this.duration,
+  });
+
+  final String? title;
+  final String? artist;
+  final Duration? duration;
 
   @override
-  Widget build(BuildContext context) => const Column(
+  Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      _DurationBadge(),
-      SizedBox(height: 12),
-      Text(
-        'The English We Speak:\nOn their toes',
-        style: TextStyle(color: Colors.white, fontSize: 29, height: 1.08, fontWeight: FontWeight.w800, letterSpacing: -.8),
-      ),
-      SizedBox(height: 8),
-      Text(
-        'BBC Learning English',
-        style: TextStyle(color: Color(0xfffdf2f8), fontSize: 17, fontWeight: FontWeight.w600),
-      ),
+      _DurationBadge(duration: duration),
+      if (title != null) ...[
+        const SizedBox(height: 12),
+        Text(
+          title!,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 29,
+            height: 1.08,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -.8,
+          ),
+        ),
+      ],
+      if (artist != null) ...[
+        const SizedBox(height: 8),
+        Text(
+          artist!,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Color(0xfffdf2f8),
+            fontSize: 17,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
     ],
   );
 }
 
 class _DurationBadge extends StatelessWidget {
-  const _DurationBadge();
+  const _DurationBadge({required this.duration});
+
+  final Duration? duration;
+
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
@@ -288,15 +395,149 @@ class _DurationBadge extends StatelessWidget {
       borderRadius: BorderRadius.circular(999),
       border: Border.all(color: Colors.white.withValues(alpha: .16)),
     ),
-    child: const Row(
+    child: Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.schedule_rounded, color: Colors.white, size: 16),
-        SizedBox(width: 6),
+        const Icon(Icons.schedule_rounded, color: Colors.white, size: 16),
+        const SizedBox(width: 6),
         Text(
-          '2m 39s',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 12),
+          _formatMetadataDuration(duration),
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w700,
+            fontSize: 12,
+          ),
         ),
+      ],
+    ),
+  );
+}
+
+String _formatMetadataDuration(Duration? duration) {
+  if (duration == null || duration <= Duration.zero) {
+    return '—';
+  }
+
+  final totalSeconds = duration.inSeconds;
+  final hours = totalSeconds ~/ Duration.secondsPerHour;
+  final minutes =
+      (totalSeconds % Duration.secondsPerHour) ~/ Duration.secondsPerMinute;
+  final seconds = totalSeconds % Duration.secondsPerMinute;
+
+  if (hours > 0) {
+    return '${hours}h ${minutes}m';
+  }
+  if (minutes > 0) {
+    return '${minutes}m ${seconds}s';
+  }
+  return '${seconds}s';
+}
+
+class _ExpandedPlaybackControls extends StatelessWidget {
+  const _ExpandedPlaybackControls();
+
+  @override
+  Widget build(BuildContext context) => BlocBuilder<PlayerCubit, PlayerState>(
+    buildWhen: (previous, current) =>
+        previous.playback.processingState != current.playback.processingState ||
+        previous.failure != current.failure ||
+        previous.playing != current.playing,
+    builder: (context, state) {
+      final processingState = state.playback.processingState;
+      if (processingState == PlaybackProcessingState.error ||
+          state.failure != null) {
+        return _ExpandedErrorNotice(failure: state.failure);
+      }
+
+      if (state.isBuffering) {
+        return const Column(
+          children: [
+            _ExpandedBufferingNotice(),
+            SizedBox(height: 8),
+            PlayerControlDock(),
+          ],
+        );
+      }
+
+      return const PlayerControlDock();
+    },
+  );
+}
+
+class _ExpandedBufferingNotice extends StatelessWidget {
+  const _ExpandedBufferingNotice();
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    liveRegion: true,
+    label: 'Đang tải',
+    child: Row(
+      key: const ValueKey('expanded-player-buffering-notice'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(
+          key: ValueKey('expanded-player-buffering-spinner'),
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: Color(0xfff2542c),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          'Đang tải',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: const Color(0xff64748b),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _ExpandedErrorNotice extends StatelessWidget {
+  const _ExpandedErrorNotice({required this.failure});
+
+  final PlayerFailure? failure;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    key: const ValueKey('expanded-player-error-notice'),
+    width: double.infinity,
+    padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+    decoration: BoxDecoration(
+      color: const Color(0xfffff7ed),
+      borderRadius: BorderRadius.circular(24),
+      border: Border.all(color: const Color(0xffffedd5)),
+    ),
+    child: Column(
+      children: [
+        const Icon(
+          Icons.error_outline_rounded,
+          color: Color(0xffea580c),
+          size: 28,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          failure?.message ?? 'Không thể phát nội dung.',
+          key: const ValueKey('expanded-player-error-message'),
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: Color(0xff9a3412),
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        if (failure?.isRecoverable == true) ...[
+          const SizedBox(height: 10),
+          TextButton(
+            key: const ValueKey('expanded-player-retry'),
+            onPressed: () => unawaited(context.read<PlayerCubit>().retry()),
+            child: const Text('Thử lại'),
+          ),
+        ],
       ],
     ),
   );
@@ -322,7 +563,13 @@ class _TranscriptSheet extends StatelessWidget {
     decoration: const BoxDecoration(
       color: Colors.white,
       borderRadius: BorderRadius.vertical(top: Radius.circular(40)),
-      boxShadow: [BoxShadow(color: Color(0x14000000), blurRadius: 30, offset: Offset(0, -8))],
+      boxShadow: [
+        BoxShadow(
+          color: Color(0x14000000),
+          blurRadius: 30,
+          offset: Offset(0, -8),
+        ),
+      ],
     ),
     child: Column(
       children: [
@@ -340,7 +587,9 @@ class _TranscriptSheet extends StatelessWidget {
                   width: 48,
                   height: 6,
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(colors: [Color(0xfff2542c), Color(0xffec4899)]),
+                    gradient: const LinearGradient(
+                      colors: [Color(0xfff2542c), Color(0xffec4899)],
+                    ),
                     borderRadius: BorderRadius.circular(99),
                   ),
                 ),
@@ -357,7 +606,13 @@ class _TranscriptSheet extends StatelessWidget {
                   child: Row(
                     children: [
                       const Expanded(
-                        child: Text('Lời thoại', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+                        child: Text(
+                          'Lời thoại',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                       ),
                       IconButton(
                         key: const ValueKey('sheet-close'),
@@ -377,7 +632,11 @@ class _TranscriptSheet extends StatelessWidget {
             children: const [
               Text(
                 "Welcome to The English We Speak, I'm Feifei and joining me is Roy.",
-                style: TextStyle(color: Color(0xff94a3b8), fontSize: 16, height: 1.55),
+                style: TextStyle(
+                  color: Color(0xff94a3b8),
+                  fontSize: 16,
+                  height: 1.55,
+                ),
               ),
               SizedBox(height: 15),
               Row(
@@ -388,7 +647,11 @@ class _TranscriptSheet extends StatelessWidget {
                   Expanded(
                     child: Text(
                       'In this program, we have a phrase we use when someone is ready for anything.',
-                      style: TextStyle(fontSize: 17, height: 1.48, fontWeight: FontWeight.w500),
+                      style: TextStyle(
+                        fontSize: 17,
+                        height: 1.48,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
                   ),
                 ],
@@ -396,7 +659,11 @@ class _TranscriptSheet extends StatelessWidget {
               SizedBox(height: 16),
               Text(
                 'Yes, and I must say you are looking very sharp today, Roy. Are you expecting...',
-                style: TextStyle(color: Color(0xffcbd5e1), fontSize: 16, height: 1.55),
+                style: TextStyle(
+                  color: Color(0xffcbd5e1),
+                  fontSize: 16,
+                  height: 1.55,
+                ),
               ),
               SizedBox(height: 30),
             ],
@@ -413,7 +680,7 @@ class _TranscriptSheet extends StatelessWidget {
               ? const Padding(
                   key: ValueKey('bottom-player'),
                   padding: EdgeInsets.only(top: 8, bottom: 14),
-                  child: PlayerControlDock(),
+                  child: _ExpandedPlaybackControls(),
                 )
               : const SizedBox(key: ValueKey('no-bottom-player')),
         ),
